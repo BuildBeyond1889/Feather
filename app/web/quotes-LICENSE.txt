@@ -1,0 +1,2 @@
+Quotes beyond the built-in 36 come from the Quotable data set (github.com/quotable-io/data), MIT licence, (c) Luke Peavey.
+Authors traditionally misquoted are marked "attributed to".

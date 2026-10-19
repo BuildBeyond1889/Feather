@@ -1,0 +1,27 @@
+# personal data, never commit
+data/
+demo/
+*.enc
+*.id
+sync/settings.json
+sync/paired.json
+sync/cache/
+sync/sync.log
+backups/
+*.log
+
+# big or downloaded things that go on the stick
+vault/
+llm/
+python/
+lib/
+world/
+*.gguf
+*.zim
+
+# Python
+__pycache__/
+*.pyc
+
+# tests
+.pytest_cache/
