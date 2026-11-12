@@ -33,6 +33,7 @@ const ENGRAVE = (k, size = 72) => { const e = ENG[k];
   return `<svg class="eng" width="${size}" height="${size}" viewBox="0 0 64 64" aria-hidden="true">${e.s.map((d, i) => `<path d="${d}" class="es"${e.r ? ` transform="rotate(${e.r[i]} 32 32)"` : ""}/>`).join("")}${e.d.map((d) => `<path d="${d}" class="ed"/>`).join("")}<path d="${e.h}" class="eh"/><path d="${e.a}" class="ea${e.f ? " ef" : ""}"/></svg>`; };
 const EMPTY = (k, title, line, act = "") => `<div class="empty">${ENGRAVE(k)}<div class="col" style="gap:5px;min-width:0"><div class="serif" style="font-size:22px;line-height:1.2">${title}</div><div class="muted small" style="line-height:1.5">${line}</div>${act}</div></div>`;
 const IC = {
+  ideas: '<rect x="3" y="4" width="7" height="6" rx="1"/><rect x="14" y="13" width="7" height="6" rx="1"/><path d="M10 7c4 0 4 9 4 9"/><circle cx="6.5" cy="4" r="1"/><circle cx="17.5" cy="13" r="1"/>',
   home: '<path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>',
   ask: '<path d="M21 12a8 8 0 0 1-11.5 7.2L4 21l1.8-5.5A8 8 0 1 1 21 12z"/>',
   vault: '<path d="M4 4h4v16H4zM10 4h4v16h-4zM16 5l3.5-1 3 15.5-3.5 1z"/>',
@@ -42,6 +43,7 @@ const IC = {
   study: '<circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2M9 2h6"/>',
   exam: '<path d="M9 4h6v3H9zM6 5H5v16h14V5h-1"/><path d="M8 12l2.5 2.5L16 9"/>',
   cards: '<rect x="3" y="7" width="14" height="12" rx="2"/><path d="M7 4h12a2 2 0 0 1 2 2v10"/>',
+  shelf: '<path d="M3 20h18"/><path d="M5 20V5h4v15"/><path d="M10 20V8h4v12"/><path d="M15.5 20l1.5-12 3.5.5L19 20"/>',
   teach: '<path d="M3 20l4-1 11-11-3-3L4 16z"/><path d="M13 7l3 3"/>',
   math: '<path d="M5 5h14M5 12h6M5 19h6M14 14l5 5M19 14l-5 5"/>',
   paper: '<path d="M3 21l3.5-1 12-12-2.5-2.5-12 12z"/><path d="M14.5 5.5l2.5 2.5"/>',
@@ -51,8 +53,8 @@ const IC = {
   eject: '<path d="M12 4l8 9H4zM4 18h16"/>',
 };
 const icon = (k, s = 17) => `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${IC[k] || ""}</svg>`;
-const NAV = [["home", "Home"], ["ask", "Ask Archie"], ["-", "Library"], ["vault", "Vault"], ["world", "World"], ["reading", "Reading"], ["docs", "Documents"], ["paper", "Paper"],
-  ["-", "Study"], ["study", "Study session"], ["exam", "Mock exams"], ["cards", "Flashcards"], ["teach", "Teach it back"], ["math", "Math"], ["mastery", "Mastery"]];
+const NAV = [["home", "Home"], ["ask", "Ask Archie"], ["-", "Library"], ["vault", "Vault"], ["world", "World"], ["reading", "Reading"], ["docs", "Documents"], ["paper", "Paper"], ["ideas", "Idea board"],
+  ["-", "Study"], ["study", "Study session"], ["exam", "Mock exams"], ["cards", "Flashcards"], ["shelf", "Shelf"], ["teach", "Teach it back"], ["math", "Math"], ["mastery", "Mastery"]];
 const WORDMARK = (s = 40) => `<span class="wordmark" style="font-size:${s}px">Feather</span>`;
 // lock -> home: the quill and wordmark fly from the lock screen into the menu's corner (FLIP)
 function glideStart() {
@@ -82,14 +84,15 @@ function glideLand() {
 function shell(active, html) {
   const landing = !!S.glide;
   root.innerHTML = `<div class="frame${landing ? " enter landing" : ""}"><div class="app"><nav><div class="brand">${FEATHER(30)}<span class="nl">${WORDMARK(40)}</span></div>
-    ${NAV.map(([k, l]) => k === "-" ? `<div class="ng">${l}</div>` : `<a href="#/${k}" class="${k === active ? "on" : ""}" title="${l}">${icon(k)}<span class="nl">${l}</span></a>`).join("")}
+    ${NAV.map(([k, l]) => k === "-" ? `<div class="ng">${l}</div>` : `<a href="#/${k}" class="${k === active ? "on" : ""}" title="${l}">${icon(k)}<span class="nl">${l}</span>${newDot(k)}</a>`).join("")}
+    ${S.sync && S.sync.on ? `<a href="#/settings" class="syncb ${syncTone(S.sync)}" id="syncb" title="Devices & sync">${syncBadge(S.sync)}</a>` : ""}
     <div class="foot"><a href="#/settings" class="${active === "settings" ? "on" : ""}" title="Settings">${icon("settings")}<span class="nl">Settings</span></a>
       <button class="navc" id="navc" title="${navMini() ? "show the menu names" : "make the menu narrow"} ( [ )" aria-label="${navMini() ? "widen the menu" : "narrow the menu"}">${navMini() ? "»" : "«"}<span class="nl">narrow menu</span></button>
-      <button class="eject" id="ej" title="Save, lock and eject the stick">${icon("eject", 14)}<span class="nl">Eject</span></button></div></nav>
+      ${S.installed ? "" : `<button class="eject" id="ej" title="Save, lock and eject the stick">${icon("eject", 14)}<span class="nl">Eject</span></button>`}</div></nav>
     <main id="main">${html}</main></div>
     <footer class="status"><span class="sd"><i class="dot ${S.model === "ready" ? "on" : ""}" id="mdot"></i>model <span id="mdl">${esc(S.model)}</span></span>
       <span>${S.synced ? "synced with your PC " + ago(S.synced) : ""}</span><span>${S.libs ? S.libs + (S.libs === 1 ? " library" : " libraries") + " offline" : ""}</span>${S.demo ? '<span class="demochip">demo · sample data</span>' : ""}<span class="sr">locks after 15 min idle</span></footer></div>`;
-  $("#ej").onclick = ejectNow;
+  if ($("#ej")) $("#ej").onclick = ejectNow;
   $("#navc").onclick = () => navToggle();
   requestAnimationFrame(() => setTimeout(animateIn, landing ? 700 : 30));
   if (landing) glideLand();
@@ -106,6 +109,59 @@ function navToggle(on = !navMini()) {
 }
 document.body.classList.toggle("navmini", navMini());
 document.addEventListener("keydown", (e) => { if (e.key === "[" && !e.ctrlKey && !e.metaKey && !e.target.matches("input,textarea,select,[contenteditable]")) navToggle(); });
+// ---------- Feather everywhere: the badge, the "1 new" dots, the card from your other laptop ----------
+const DOTK = { paper: "paper", reading: "reading", cards: "cards", ideas: "ideas" };
+function newDot(k) { const n = S.sync && S.sync.on && DOTK[k] ? (S.sync.dots || {})[DOTK[k]] : 0; return n ? `<span class="newdot" title="new from your other laptop"><i></i><span class="nl">${n} new</span></span>` : ""; }
+const since = (t) => { if (!t) return ""; const s = Math.max(0, Math.round(Date.now() / 1000 - t)); return s < 20 ? "just now" : s < 60 ? s + " s ago" : ago(t); };
+function syncTone(v) { return v.state === "ok" ? "ok" : v.state === "off" || v.busy || v.state === "idle" ? "wait" : "bad"; }
+function syncBadge(v) {
+  const n = v.laptops || 1, lap = `${n} laptop${n === 1 ? "" : "s"}`;
+  let a, b;
+  if (v.state === "ok") { a = `<b>● in sync</b> · ${lap}`; b = v.waiting ? `${v.waiting} change${v.waiting === 1 ? "" : "s"} on the way` : `caught up ${since(v.last_ok)}`; }
+  else if (v.state === "idle" || v.busy) { a = `<b>● syncing</b> · ${lap}`; b = "with your PC"; }
+  else if (v.state === "off") { a = `<b>● saved here</b>${v.waiting ? ` · ${v.waiting} waiting` : ""}`; b = `${esc(v.pc || "your PC")} not reachable`; }
+  else { a = `<b>● not syncing</b>`; b = esc(v.err || "see Settings"); }
+  return `<span class="sdot"></span><span class="nl">${a}<br>${b}</span>`;
+}
+async function syncPoll() {
+  if (!S.sync || !S.sync.on || document.querySelector("#lockroot")) return;
+  try { S.sync = await api("sync/status", {}); } catch (e) { return; }
+  const b = $("#syncb"); if (b) { b.className = "syncb " + syncTone(S.sync); b.innerHTML = syncBadge(S.sync); }
+  syncDecor(document.querySelector("aside.fdr"));
+  document.querySelectorAll("nav a[href]").forEach((a) => { const k = a.getAttribute("href").slice(2); if (!DOTK[k]) return; const old = a.querySelector(".newdot"), html = newDot(k);
+    if (old) old.remove(); if (html) a.insertAdjacentHTML("beforeend", html); });
+}
+setInterval(syncPoll, 10000);
+// the slide-out drawer (nest.js) gets the same badge and dots, and no Eject on an installed copy
+function syncDecor(dr) {
+  if (!dr) return;
+  const ej = dr.querySelector(".fdej"); if (ej) ej.style.display = S.installed ? "none" : "";
+  dr.querySelectorAll(".fdi[data-k]").forEach((a) => { const k = DOTK[a.dataset.k], n = k && S.sync && S.sync.on ? (S.sync.dots || {})[k] : 0;
+    let d = a.querySelector(".fdnew"); if (!n) { if (d) d.remove(); return; }
+    if (!d) { d = document.createElement("b"); d.className = "fdnew"; a.append(d); } d.innerHTML = `<i></i>${n} new`; });
+  let b = dr.querySelector(".fdsync");
+  if (!(S.sync && S.sync.on)) { if (b) b.remove(); return; }
+  if (!b) { b = document.createElement("a"); b.href = "#/settings"; const f = dr.querySelector(".fdf"); if (!f) return; f.before(b); }
+  b.className = "fdsync syncb " + syncTone(S.sync); b.innerHTML = syncBadge(S.sync);
+}
+async function syncStart() { try { S.sync = await api("sync/status", {}); S.installed = !!S.sync.installed; } catch (e) {} }
+function fromCard(c) {  // "From the Surface · while this laptop was closed"
+  if (!c || !c.from) return "";
+  const who = Object.values(c.from).map((x) => (/^the /i.test(x) ? x : "the " + x)), name = who.length > 1 ? who.slice(0, -1).join(", ") + " and " + who[who.length - 1] : who[0];
+  const nb = Object.entries(c.paper || {}), rd = Object.values(c.reading || {}), cd = c.cards || {};
+  const bits = [];
+  if (nb.length) bits.push(`<b>Paper:</b> ${nb.slice(0, 2).map(([, x]) => esc(x.title) + (x.strokes ? `, ${x.strokes} new stroke${x.strokes === 1 ? "" : "s"}` : x.new ? ", new" : "")).join(" · ")}${nb.length > 2 ? ` +${nb.length - 2}` : ""}`);
+  if (rd.length) bits.push(`<b>Reading:</b> ${rd.slice(0, 2).map((x) => `${esc(x.title)}, now ${esc(x.where)}`).join(" · ")}`);
+  if (cd.reviewed || cd.added) bits.push(`<b>Flashcards:</b> ${[cd.reviewed ? cd.reviewed + " reviewed" : "", cd.added ? cd.added + " new" : ""].filter(Boolean).join(", ")}`);
+  if (c.jots) bits.push(`<b>Quick notes:</b> ${c.jots}`);
+  if (c.ideas) bits.push(`<b>Idea board:</b> changed`);
+  if (c.highlights) bits.push(`<b>Highlights:</b> ${c.highlights}`);
+  const go = nb.length ? [`#/paper/${nb[0][0]}${nb[0][1].pid ? "/" + nb[0][1].pid : ""}`, "Open the drawing →"] : rd.length ? [rd[0].href, "Continue reading →"] : cd.reviewed || cd.added ? ["#/cards", "Review →"] : c.ideas ? ["#/ideas", "Open the board →"] : ["#/settings", "See what changed →"];
+  return `<section class="card span3 fromdev" id="fromdev"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="var(--lime)" stroke-width="1.6" aria-hidden="true"><rect x="2" y="5" width="9" height="7" rx="1"/><rect x="13" y="12" width="9" height="7" rx="1"/><path d="M8 15h3M13 9h3M15 7l2 2-2 2M9 13l-2 2 2 2"/></svg>
+    <div class="col" style="gap:6px;flex:1;min-width:0"><div class="k fdk">From ${esc(name)}${c.closed ? " · while this laptop was closed" : ""}</div>
+      <div class="fdl">${bits.join(" · ") || "Small changes, all in."}</div></div>
+    <a class="btn go fdgo" href="${esc(go[0])}">${go[1]}</a><button class="small fdx" id="fdx" title="got it" aria-label="dismiss">✕</button></section>`;
+}
 function animateIn() {
   document.querySelectorAll(".ringfill").forEach((c) => { c.style.transition = calm() ? "none" : "stroke-dasharray 1.2s cubic-bezier(.2,.7,.2,1)"; c.setAttribute("stroke-dasharray", c.dataset.dash); });
   document.querySelectorAll("[data-count]").forEach((el) => {
@@ -310,6 +366,7 @@ async function vUnlock() {
 const lateGreet = (name) => (name ? `The Quiet Hours, ${name}…` : "The Quiet Hours…");
 async function vHome() {
   const h = await api("home"); S.model = h.model; S.synced = h.synced; S.libs = h.libs;
+  if (!S.sync) await syncStart();
   const b = h.reading, hr = new Date().getHours();
   const greet = hr >= 21 || hr < 5 ? lateGreet(h.name) : (hr >= 5 && hr < 12 ? "Morning" : hr >= 12 && hr < 17 ? "Afternoon" : "Evening") + (h.name ? ", " + h.name : "");
   const last = Object.values(b?.chapters || {}).sort((x, y) => y.t - x.t)[0];
@@ -328,6 +385,7 @@ async function vHome() {
       ${dl.length ? `<i></i><span role="listitem">${icon("cal")}<span>${esc(dl[0].what)} · ${days(dl[0].date) <= 0 ? "<b>today</b>" : `<b>${days(dl[0].date)}</b> day${days(dl[0].date) === 1 ? "" : "s"}`}</span></span>` : ""}
       ${h.due ? `<a class="tgo" href="#/cards">Review ${h.due === 1 ? "it" : "them"} →</a>` : `<a class="tgo" href="#/math">Practice math →</a>`}</div>
     <div class="grid home">
+      ${fromCard(h.fromdev)}
       <section class="card span2 readcard">${b ? `<div class="cover"><span>${esc(b.title)}</span></div>
         <div class="col" style="gap:8px;flex:1;min-width:0"><h2 class="hd">Reading</h2><div class="serif" style="font-size:28px;line-height:1.1">${esc(b.title)}</div>
           <div class="muted small">${esc(b.author)}${b.progress?.chapter ? " · " + esc(b.progress.chapter) : ""} · ${b.digital ? "ch." : "p."} ${esc(b.progress?.page || 0)}${b.pages ? " of " + esc(b.pages) : ""}</div>
@@ -353,6 +411,8 @@ async function vHome() {
     </div></div>`);
   homeCards();
   $("#calc").onclick = (e) => { if (!e.target.closest("a")) calEdit(); };
+  const fx = $("#fdx"); if (fx) fx.onclick = async () => { const c = $("#fromdev"); c.classList.add("gone"); await api("sync/dismiss", {}).catch(() => {}); setTimeout(() => c.remove(), 260); };
+  const fg = $(".fdgo"); if (fg) fg.addEventListener("click", () => api("sync/dismiss", {}).catch(() => {}));
 }
 // a card on the home screen opens wherever its link goes, wherever you click on it
 function homeCards() {
@@ -514,6 +574,7 @@ async function vExam() {
       <label for="mins">Minutes (0 = untimed)</label><input id="mins" type="number" value="15" min="0" style="width:80px">
       <button class="go" id="go">build the exam</button><span id="st" class="muted"></span></div></div>`);
   const pk = await notePicker(m);
+  archieExams(m);
   $("#go").onclick = async () => {
     const paths = [...pk.sel], folder = pk.folder();
     if (!paths.length && !folder) return toast("Pick some notes or a folder");
@@ -522,6 +583,67 @@ async function vExam() {
     if (!ex.questions.length) return ($("#st").textContent = "Couldn't make questions from those notes. Try longer notes.");
     take(ex, +$("#mins").value, false);
   };
+}
+
+// ---- the Shelf: what's in Feather and what's in Archie, side by side. Nothing moves until you press ----
+async function vShelf() {
+  const m = shell("shelf", `<div class="col" style="gap:14px;max-width:1100px"><div class="row" style="align-items:baseline;gap:12px"><h1>Shelf</h1><span class="muted small">what's in Feather and what's in Archie · nothing moves until you press · moves happen at the next sync with your PC</span></div>
+    <div class="shelfg"><div class="col" id="shf" style="gap:8px"><div class="k">In Feather</div></div><div class="col" id="sha" style="gap:8px"><div class="k">Only in Archie</div></div></div></div>`);
+  const [all, LK, NT] = await Promise.all([api("cards/all", {}), api("cards/link", {}).catch(() => ({ archie: {}, pending: {}, hist: [] })), api("shelf/notes", {}).catch(() => ({ books: [], jots: [], pending: [] }))]);
+  const k = (n) => String(n).trim().replace(/\s+/g, " ").toLowerCase();
+  const decks = {}; all.forEach((c) => (decks[c.deck || "General"] ||= []).push(c));
+  const arch = {}; Object.entries(LK.archie || {}).forEach(([n, x]) => (arch[k(n)] = { ...x, name: n }));
+  const pend = {}; Object.entries(LK.pending || {}).forEach(([n, op]) => (pend[k(n)] = op));
+  const when = (t) => (t ? new Date(t * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "");
+  const st = (d) => { const a = arch[k(d)]; if (pend[k(d)]) return `<span class="xst wait">waiting for your PC…</span>`; if (!a) return `<span class="xst">only in Feather</span>`;
+    if (!a.linked) return `<span class="xst">Archie has a set with this name</span>`; if (a.anewer) return `<span class="xst new">Archie has a newer version</span>`;
+    return `<span class="xst ok">in Archie · sent ${when(a.t)}${a.fnewer ? " · changed here since" : ""}</span>`; };
+  const card = (type, title, sub, btns, dash) => `<div class="shc${dash ? " dash" : ""}"><div class="k" style="letter-spacing:.14em">${type}</div><div class="serif" style="font-size:18px">${esc(title)}</div><div class="small">${sub}</div>${btns ? `<div class="row" style="gap:6px;flex-wrap:wrap">${btns}</div>` : ""}</div>`;
+  const F = $("#shf"), A = $("#sha");
+  F.insertAdjacentHTML("beforeend", Object.keys(decks).sort().map((d) => card("Flashcards", d, `${decks[d].length} cards · ${st(d)}`, pend[k(d)] ? "" : `${arch[k(d)] ? `<button class="small xgo" data-g="${esc(arch[k(d)].name)}">get Archie's</button>` : ""}<button class="small xgo" data-s="${esc(d)}">send to Archie</button>`)).join(""));
+  F.insertAdjacentHTML("beforeend", (NT.books || []).map((b) => card("Book notes", b.title, `${b.n} notes and highlights · Archie gets them as one note`, `<button class="small xgo" data-nb="${esc(b.id)}">send to Archie</button>`)).join(""));
+  F.insertAdjacentHTML("beforeend", (NT.jots || []).map((j) => card("Quick note", j.first || "note", ago(j.t), `<button class="small xgo" data-nj="${esc(j.id)}">send to Archie</button>`)).join(""));
+  const onlyA = Object.values(arch).filter((a) => !Object.keys(decks).some((d) => k(d) === k(a.name)));
+  A.insertAdjacentHTML("beforeend", onlyA.map((a) => card("Flashcards", a.name, `${a.n} cards`, pend[k(a.name)] ? `<span class="xst wait">waiting for your PC…</span>` : `<button class="small xgo" data-r="${esc(a.name)}">request</button>`, true)).join("") || `<div class="dim small">Nothing only in Archie.</div>`);
+  if ((LK.hist || []).length) A.insertAdjacentHTML("beforeend", `<div class="k" style="margin-top:10px">History</div>${LK.hist.slice(0, 12).map((h) => card(h.kind === "exam" ? "Mock exam" : "Flashcards", `${h.name} · ${h.side === "archie" ? "Archie's" : "Feather's"} copy`, `${new Date(h.t * 1000).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })} · ${h.kind === "exam" ? h.n + " questions" : h.n + " cards"}`, `<button class="small xgo" data-h="${esc(h.id)}" data-hn="${esc(h.name)}">put it back</button>`)).join("")}`);
+  const go = async (op, deck, extra = {}) => { await api("cards/xfer", { op, deck, ...extra }); toast(op === "restore" ? "Putting it back · at the next sync" : op === "f2a" ? `Sending “${deck}” to Archie · at the next sync` : `Asking Archie for “${deck}”`); vShelf(); };
+  m.querySelectorAll("[data-s]").forEach((b) => sure(b, () => go("f2a", b.dataset.s), arch[k(b.dataset.s)] ? "replace Archie's copy?" : "send it?"));
+  m.querySelectorAll("[data-g]").forEach((b) => sure(b, () => go("a2f", b.dataset.g), "replace this set?"));
+  m.querySelectorAll("[data-r]").forEach((b) => (b.onclick = () => go("a2f", b.dataset.r)));
+  m.querySelectorAll("[data-h]").forEach((b) => sure(b, () => go("restore", b.dataset.hn, { hid: b.dataset.h }), "put this one back?"));
+  const note = async (kind, id, b) => { const r = await api("shelf/send", { kind, id }); b.textContent = "sent ✓"; b.disabled = true; toast(`“${r.name}” going to Archie · an inbox card there after the next sync`); };
+  m.querySelectorAll("[data-nb]").forEach((b) => (b.onclick = () => note("book", b.dataset.nb, b)));
+  m.querySelectorAll("[data-nj]").forEach((b) => (b.onclick = () => note("jot", b.dataset.nj, b)));
+  archieExams(m);  // mock exams: take, send, get, request (the same box as on the Mock exams page)
+}
+
+// Archie's mock exams in Feather: take them here, send your attempts back, get Archie's, request the ones only Archie has
+async function archieExams(m) {
+  let L = null, err = "";
+  try { L = await api("exam/archie", {}); } catch (e) { err = e.message || String(e); }
+  if (!L || (!L.mine.length && !Object.keys(L.archie || {}).length)) {  // say so, instead of showing nothing
+    if (err) api("jserr", { where: "exam/archie", msg: err }).catch(() => {});
+    const note = document.createElement("div"); note.className = "card col"; note.style.cssText = "gap:6px;max-width:900px;margin-top:18px";
+    note.innerHTML = `<div class="k">Mock exams from Archie</div><div class="dim small">${err ? "Couldn't ask for them: " + esc(err) + ". Close Feather fully (Alt+M) and open it again." : "None yet. Archie's exams show up here after your PC sends the list (at the next sync; Settings › Sync now)."}</div>`;
+    m.appendChild(note);
+    return;
+  }
+  const A = L.archie || {}, P = L.pending || {}, have = new Set(L.mine.map((x) => x.id));
+  const st = (id) => { const a = A[id]; if (P[id]) return `<span class="xst wait">waiting for your PC…</span>`; if (!a || !a.linked) return `<span class="xst">only in Feather</span>`;
+    if (a.anewer) return `<span class="xst new">Archie has a newer version</span>`; return `<span class="xst ok">in Archie${a.fnewer ? " · new attempts here" : ""}</span>`; };
+  const box = document.createElement("div"); box.className = "card col"; box.style.cssText = "gap:6px;max-width:900px;margin-top:18px";
+  box.innerHTML = `<div class="k">Mock exams from Archie</div>
+    ${L.mine.map((x) => `<div class="xrow"><span class="serif">${esc(x.title)}</span> <span class="dim small">${x.n} questions · ${x.best == null ? "not taken yet" : "best " + x.best + "%"}</span>${st(x.id)}
+      <button class="small go" data-xt="${esc(x.id)}">take it</button>${P[x.id] ? "" : `<button class="small xgo" data-xs="${esc(x.id)}" data-tt="${esc(x.title)}">send to Archie</button>${A[x.id] ? `<button class="small xgo" data-xg="${esc(x.id)}" data-tt="${esc(x.title)}">get Archie's</button>` : ""}`}</div>`).join("")}
+    ${Object.entries(A).filter(([id]) => !have.has(id)).map(([id, a]) => `<div class="xrow"><span class="serif">${esc(a.title)}</span> <span class="dim small">${a.n} questions · only in Archie${a.best != null ? " · best " + a.best + "%" : ""}</span>${P[id] ? `<span class="xst wait">waiting for your PC…</span>` : `<button class="small xgo" data-xr="${esc(id)}" data-tt="${esc(a.title)}">request</button>`}</div>`).join("")}
+    <label class="small dim xclean"><input type="checkbox" id="xcl"> send or get a blank exam (no attempts)</label>`;
+  m.appendChild(box);
+  const go = async (b, op) => { await api("cards/xfer", { op, deck: b.dataset.tt, kind: "exam", eid: b.dataset.xs || b.dataset.xg || b.dataset.xr, ...($("#xcl").checked ? { clean: true } : {}) });
+    toast(op === "f2a" ? "Sending it to Archie · at the next sync" : "Asking Archie for it · it arrives at the next sync"); box.remove(); archieExams(m); };
+  box.querySelectorAll("[data-xt]").forEach((b) => (b.onclick = async () => { const ex = await api("exam/fromarchie", { id: b.dataset.xt }); take(ex, ex.minutes || 0, false); }));
+  box.querySelectorAll("[data-xs]").forEach((b) => sure(b, () => go(b, "f2a"), "replace Archie's copy?"));
+  box.querySelectorAll("[data-xg]").forEach((b) => sure(b, () => go(b, "a2f"), "replace this one?"));
+  box.querySelectorAll("[data-xr]").forEach((b) => (b.onclick = () => go(b, "a2f")));
 }
 
 function take(ex, minutes, quick) {
@@ -754,8 +876,12 @@ async function vVaultRead(rest) {
 }
 
 // ---------- reading mode (theme + size kept on this laptop) ----------
-const RM = { get() { try { return JSON.parse(localStorage.getItem("feather-read")) || {}; } catch (e) { return {}; } },
-  set(x) { try { localStorage.setItem("feather-read", JSON.stringify({ ...RM.get(), ...x })); } catch (e) {} } };
+// reading settings (theme, size, voice, speed...): kept in your Feather, so they survive restarts and match on every laptop
+const RM = { _c: null, _loaded: false,
+  get() { if (!RM._c) { try { RM._c = JSON.parse(localStorage.getItem("feather-read")) || {}; } catch (e) { RM._c = {}; } } return RM._c; },
+  set(x) { RM._c = { ...RM.get(), ...x }; try { localStorage.setItem("feather-read", JSON.stringify(RM._c)); } catch (e) {}
+    clearTimeout(RM._t); RM._t = setTimeout(() => api("prefs", { set: RM._c }).catch(() => {}), 500); },
+  async load() { if (RM._loaded) return; try { const p = await api("prefs", {}); if (p && typeof p === "object" && !p.error) { RM._c = { ...RM.get(), ...p }; try { localStorage.setItem("feather-read", JSON.stringify(RM._c)); } catch (e) {} } RM._loaded = true; } catch (e) {} } };
 const RT = { dark: ["#0c0d0b", "#e8ecdf"], sepia: ["#f1e7d0", "#3b2f22"], paper: ["#fbfaf6", "#1d1d1b"] };
 function readBar() {
   const t = RM.get().theme || "dark";
@@ -951,17 +1077,38 @@ function sure(btn, fn, ask = "tap again to delete") {
 // ---------- manage flashcards: edit, move, delete, rename or delete a deck ----------
 async function manageCards(box) {
   const all = await api("cards/all", {});
+  const LK = await api("cards/link", {}).catch(() => ({ archie: {}, pending: {} }));
   const decks = {};
   all.forEach((c) => (decks[c.deck || "General"] ||= []).push(c));
   const names = Object.keys(decks).sort((a, b) => a.localeCompare(b));
-  box.innerHTML = names.length ? names.map((d) => `<details class="mdeck" data-deck="${esc(d)}"><summary><span class="serif">${esc(d)}</span> <span class="dim small">${decks[d].length} card${decks[d].length === 1 ? "" : "s"}</span></summary>
-      <div class="row mdact"><button class="small" data-act="rename">rename deck</button><button class="small del" data-act="deldeck">delete deck</button></div>
+  const k = (n) => String(n).trim().replace(/\s+/g, " ").toLowerCase();
+  const arch = {}; Object.entries(LK.archie || {}).forEach(([n, x]) => (arch[k(n)] = { ...x, name: n }));
+  const pend = {}; Object.entries(LK.pending || {}).forEach(([n, op]) => (pend[k(n)] = op));
+  const when = (t) => (t ? new Date(t * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "");
+  const linkTxt = (d) => { const a = arch[k(d)];
+    if (pend[k(d)]) return `<span class="xst wait">waiting for your PC…</span>`;
+    if (!a) return `<span class="xst">only in Feather</span>`;
+    if (!a.linked) return `<span class="xst">Archie has a set with this name</span>`;
+    if (a.anewer) return `<span class="xst new">Archie has a newer version</span>`;
+    return `<span class="xst ok">in Archie · sent ${when(a.t)}${a.fnewer ? " · changed here since" : ""}</span>`; };
+  const onlyA = Object.values(arch).filter((a) => !names.some((d) => k(d) === k(a.name))).sort((a, b) => a.name.localeCompare(b.name));
+  box.innerHTML = (names.length ? names.map((d) => `<details class="mdeck" data-deck="${esc(d)}"><summary><span class="serif">${esc(d)}</span> <span class="dim small">${decks[d].length} card${decks[d].length === 1 ? "" : "s"}</span>${linkTxt(d)}</summary>
+      <div class="row mdact"><button class="small" data-act="rename">rename deck</button><button class="small xgo" data-act="send">send to Archie</button>${arch[k(d)] ? `<button class="small xgo" data-act="get">get Archie's</button>` : ""}<label class="small dim xclean"><input type="checkbox" data-act="clean"> clean copy (no progress)</label><button class="small del" data-act="deldeck">delete deck</button></div>
       <div class="mlist">${decks[d].map((c) => `<div class="mcard" data-id="${c.id}"><div class="mtext"><div>${c.fimg ? '<span class="chip">picture</span> ' : ""}${esc(c.front)}</div><div class="dim small">${c.bimg ? '<span class="chip">picture</span> ' : ""}${esc(c.back)}${c.hint ? ` · hint: ${esc(c.hint)}` : ""}</div></div>
         <div class="row mbtn"><button class="small" data-act="edit" aria-label="edit card">edit</button><button class="small del" data-act="del" aria-label="delete card">delete</button></div></div>`).join("")}</div></details>`).join("")
-    : `<div class="dim small">No cards yet.</div>`;
+    : `<div class="dim small">No cards yet.</div>`)
+    + ((LK.hist || []).length ? `<details class="mdeck" id="xhist"><summary><span class="serif">History</span> <span class="dim small">every version a send or get replaced · put one back</span></summary>${LK.hist.map((h) => `<div class="xrow"><span>${esc(h.name)} · ${h.side === "archie" ? "Archie's" : "Feather's"} copy</span> <span class="dim small">${new Date(h.t * 1000).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })} · ${h.kind === "exam" ? h.n + " questions" : h.n + " cards"}</span><button class="small xgo" data-hid="${esc(h.id)}" data-hn="${esc(h.name)}">put it back</button></div>`).join("")}</details>` : "")
+    + (onlyA.length ? `<div class="k xonly">Only in Archie</div>${onlyA.map((a) => `<div class="xrow" data-a="${esc(a.name)}"><span class="serif">${esc(a.name)}</span> <span class="dim small">${a.n} card${a.n === 1 ? "" : "s"}</span>${pend[k(a.name)] ? `<span class="xst wait">waiting for your PC…</span>` : `<button class="small xgo" data-act="req">request</button>`}</div>`).join("")}` : "");
+  const xfer = async (op, deck, extra = {}) => { await api("cards/xfer", { op, deck, ...extra }); toast(op === "restore" ? `Putting back “${deck}” · at the next sync` : op === "f2a" ? `Sending “${deck}” to Archie · at the next sync` : `Asking Archie for “${deck}” · it arrives at the next sync`); redraw(op === "f2a" ? deck : null); };
+  box.querySelectorAll("[data-hid]").forEach((b) => sure(b, () => xfer("restore", b.dataset.hn, { hid: b.dataset.hid }), "put this one back?"));
+  box.querySelectorAll(".xrow").forEach((row) => { const b = row.querySelector('[data-act="req"]'); if (b) b.onclick = () => xfer("a2f", row.dataset.a); });
   const redraw = (open) => manageCards(box).then(() => open && box.querySelector(`details[data-deck="${CSS.escape(open)}"]`)?.setAttribute("open", ""));
   box.querySelectorAll(".mdeck").forEach((det) => {
     const deck = det.dataset.deck;
+    const a = arch[k(deck)];
+    const cl = () => (det.querySelector('[data-act="clean"]').checked ? { clean: true } : {});
+    sure(det.querySelector('[data-act="send"]'), () => xfer("f2a", deck, cl()), a ? "replace Archie's copy?" : "send it to Archie?");
+    if (det.querySelector('[data-act="get"]')) sure(det.querySelector('[data-act="get"]'), () => xfer("a2f", a.name, cl()), "replace this set with Archie's?");
     sure(det.querySelector('[data-act="deldeck"]'), async () => { const r = await api("cards/delete", { deck }); toast(`Deleted ${r.deleted} card${r.deleted === 1 ? "" : "s"}`); redraw(); }, `delete all ${decks[deck].length}?`);
     det.querySelector('[data-act="rename"]').onclick = () => {
       const row = det.querySelector(".mdact");
@@ -987,11 +1134,50 @@ async function manageCards(box) {
   });
 }
 
+// ---------- settings: devices & sync ----------
+function devicesCard(v) {
+  if (!v.on) return `<div class="card devs"><div class="k">Devices &amp; sync</div>
+    <div class="soft small" style="line-height:1.7">${v.installed ? "Feather is installed on this laptop, but it isn't syncing yet. Unlock once with your password and it starts." :
+      "This is the Feather stick. Plug it into your PC and it catches up with your laptops (and they with it).<br>To keep Feather on a laptop for good, run <b>Install Feather on this laptop</b> on the stick."}</div></div>`;
+  const others = (v.devices || []).filter((d) => d.host !== v.host).sort((a, b) => (a.kind === "stick") - (b.kind === "stick"));
+  const dev = (label, name, line, me) => `<div class="dev${me ? " me" : ""}"><div class="k">${label}</div><div class="serif dn">${name}</div><div class="small dl">${line}</div></div>`;
+  const row = (on, title, tag, text) => `<div class="how"><span class="hr ${on}"></span><div><b>${title}</b> ${tag ? `<span class="htag ${on}">${tag}</span>` : ""}<div class="dim small">${text}</div></div></div>`;
+  const st = v.state === "ok" ? `● in sync${v.model ? " · " + esc(v.model) : ""}` : v.state === "off" ? `● saved here · ${v.waiting || 0} waiting` : `● ${esc(v.err || "not syncing")}`;
+  return `<div class="card devs" id="devs"><div class="row" style="justify-content:space-between;align-items:baseline"><div class="k">Devices &amp; sync</div><button class="small" id="dsync">${v.busy ? "syncing…" : "sync now"}</button></div>
+    <div class="soft small" style="line-height:1.6">Everything in Feather follows you between laptops: Paper, reading, notes, flashcards, the idea board. Encrypted on every device and on the way.</div>
+    <div class="devg">${dev("This laptop", `<span id="dname">${esc(v.name)}</span> <button class="small dren" id="dren" title="rename this laptop">rename</button>`, st, true)}
+      ${others.map((d) => dev(d.kind === "stick" ? "Stick" : d.kind === "phone" ? "Phone" : "Laptop", esc(d.kind === "stick" ? "Feather stick" : d.name), d.kind === "stick" ? `catches up when plugged into your PC · last synced ${ago(d.seen) || "never"}` : `● last synced ${since(d.seen)}`)).join("")}
+      ${dev("Hub", `Your PC${v.pc ? ` <span class="dim small">(${esc(v.pc)})</span>` : ""}`, v.state === "ok" ? "● reachable · keeps the master copy · Feather notes in Obsidian: Feather/" : "● not reachable right now · Archie on, same Wi-Fi or Tailscale")}</div>
+    ${v.state !== "ok" && v.err ? `<div class="dim small" id="derr" style="line-height:1.6;word-break:break-word">Last try: ${esc(v.err)}</div>` : ""}
+    <div class="devh"><div class="col" style="gap:10px"><div class="hd" style="font-size:16px">How it syncs</div>
+        ${row("on", "Through your PC", "on", "Works anywhere. Changes wait on this laptop until it reaches your PC.")}
+        ${row("", "Laptop to laptop on the same Wi-Fi", "later", "At school with the PC asleep: the two laptops sync with each other.")}
+        ${row("ring", "The Feather stick", "", "Take-anywhere copy for any computer, and a backup. Plug it into your PC and it catches up.")}</div>
+      <div class="col" style="gap:8px"><div class="hd" style="font-size:16px">What follows you</div>
+        <div class="wf"><span>Paper</span><span>stroke by stroke; drawing on both laptops merges, no ink lost</span>
+        <span>Reading</span><span>your page, highlights and notes; books from your notes folder copy over in the background</span>
+        <span>Notes · cards</span><span>edited on both before syncing? both versions kept, side by side</span>
+        <span>Idea board</span><span>cards and their places on the board</span></div></div></div>
+    ${(v.recent || []).length ? `<div class="drec"><span class="k">Recent</span>${v.recent.slice(0, 4).map((r) => `<span>${r.dir === "up" ? "↑" : "↓"} ${esc(r.what)}${r.dir === "down" && r.name ? ` <span class="dim">· ${esc(r.name)}</span>` : ""}</span>`).join('<span class="dim">·</span>')}</div>` : ""}</div>`;
+}
+function bindDevices() {
+  const b = $("#dsync"); if (!b) return;
+  b.onclick = async () => { b.textContent = "syncing…"; b.disabled = true; try { S.sync = await api("sync/now", {}); toast(S.sync.state === "ok" ? "In sync" : S.sync.err || "Couldn't reach your PC"); } catch (e) { toast(e.message); } vSettings(); };
+  const r = $("#dren"); if (r) r.onclick = () => { const cur = $("#dname").textContent;
+    $("#dname").outerHTML = `<input id="dnin" maxlength="30" value="${esc(cur)}" style="width:150px;padding:4px 8px;font-size:15px">`; r.remove();
+    const i = $("#dnin"); i.focus(); i.select();
+    let fired = false;
+    const done = async (save) => { if (fired) return; fired = true; if (save && i.value.trim() && i.value.trim() !== cur) { S.sync = await api("sync/name", { name: i.value }); toast("Renamed"); } vSettings(); };
+    i.onkeydown = (e) => { if (e.key === "Enter") done(true); if (e.key === "Escape") done(false); }; i.onblur = () => done(true); };
+}
+
 // ---------- settings ----------
 async function vSettings() {
   const st = await (await fetch("/api/state")).json();
   const me = await api("settings/get", {});
+  await syncStart();
   const m = shell("settings", `<div class="col" style="gap:18px;max-width:640px"><h1>Settings</h1>
+    ${devicesCard(S.sync || {})}
     <div class="card"><div class="k">You</div><label class="muted small" for="nm">Your name, for the greeting</label>
       <div class="row"><input id="nm" maxlength="40" value="${esc(me.name || "")}" placeholder="leave empty for no name" style="max-width:260px"><button id="nms">save</button></div></div>
     <div class="card"><div class="k">Model</div><div>${st.model === "missing" ? "Not on this stick. Exams fall back to fill-the-blank questions from your notes." : "Offline model: " + esc(st.model)}</div>
@@ -1020,6 +1206,7 @@ async function vSettings() {
         <li>Quotes from public-domain and openly licensed collections</li></ul></details>
       <div class="row"><button id="tour">show the tour again</button>${me.demo ? '<span class="demochip">demo · sample data</span>' : ""}</div></div>
     <div><button id="lk">lock now</button></div></div>`);
+  bindDevices();
   $("#nms").onclick = async () => { await api("settings/set", { name: $("#nm").value }); toast("Saved"); };
   $("#nm").onkeydown = (e) => { if (e.key === "Enter") $("#nms").click(); };
   $("#tour").onclick = () => { location.hash = "#/home"; setTimeout(() => tour(true), 500); };
@@ -1079,8 +1266,12 @@ async function route() {
   const [_, v, a] = location.hash.split("/");
   try {
     if (!v || v === "unlock") { if (document.querySelector("#lockroot")) return; return await vUnlock(); }  // already showing: keep what you've typed
-    const views = { home: vHome, math: () => vMath(a), docs: () => vDocs(a), paper: () => (window.vPaper ? vPaper(a, location.hash.split("/")[3]) : vHome()), ask: vAsk, vault: () => vVault(a, location.hash.split("/").slice(3).join("/")), world: () => vWorld(a), reading: vReading, book: () => vBook(a), review: () => vReview(a), exam: vExam, study: vStudy, teach: vTeach, cards: vCards, settings: vSettings, read: () => (window.vRead ? vRead(a, location.hash.split("/")[3]) : vDocs()), note: () => vNote(location.hash.split("/").slice(2).join("/")), mastery: () => vMastery() };
+    if (!S.sync) await syncStart();
+    await RM.load();
+    const views = { home: vHome, math: () => vMath(a), docs: () => vDocs(a), paper: () => (window.vPaper ? vPaper(a, location.hash.split("/")[3]) : vHome()), ideas: () => (window.vIdeas ? vIdeas() : vHome()), ask: vAsk, vault: () => vVault(a, location.hash.split("/").slice(3).join("/")), world: () => vWorld(a), reading: vReading, book: () => vBook(a), review: () => vReview(a), exam: vExam, study: vStudy, teach: vTeach, cards: vCards, shelf: vShelf, settings: vSettings, read: () => (window.vRead ? vRead(a, location.hash.split("/")[3]) : vDocs()), note: () => vNote(location.hash.split("/").slice(2).join("/")), mastery: () => vMastery() };
     await (views[v] || vHome)();
+    const dk = DOTK[v === "book" ? "reading" : v === "read" ? "reading" : v];
+    if (dk && S.sync && S.sync.on && (S.sync.dots || {})[dk]) { delete S.sync.dots[dk]; api("sync/seen", { k: dk }).then(syncPoll).catch(() => {}); }
   } catch (e) { if (e.message !== "locked") toast(e.message); }
 }
 window.onhashchange = route;

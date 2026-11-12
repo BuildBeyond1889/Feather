@@ -79,7 +79,13 @@ def ask_password(msg):
     return res["pw"]
 
 
+QUIET = None  # set when DUMONT runs this sync as part of its Field Kit sync: messages go back to DUMONT, no pop-ups
+
+
 def notify(title, lines, drive=None, extra=None):
+    if QUIET is not None:
+        QUIET.update(title=title, lines=list(lines))
+        return
     import tkinter as tk
     w = tk.Tk()
     w.overrideredirect(True)
@@ -184,6 +190,79 @@ def export(data, vault, folder):
     ex += [f"| {time.strftime('%Y-%m-%d', time.localtime(e['t']))} | {e['title']} | {e['score']}% | {', '.join(e.get('weak', []))} |" for e in reversed(data["exams"])]
     open(os.path.join(out, "Exams.md"), "w", encoding="utf-8").write("\n".join(ex))
     return n, len(data["cards"])
+
+
+# ---------- quick notes: each one its own note, listed in Quick Notes.md, and linked into the note you picked ----------
+def export_jots(data, vault, folder, nd):
+    jots = data.get("jots") or {}
+    if not jots:
+        return 0
+    qd = os.path.join(vault, folder, "Quick Notes")
+    os.makedirs(qd, exist_ok=True)
+    idx = ["# Quick notes", "Jotted in Feather. Edit them in Feather; this list and the notes are rewritten at each sync.", ""]
+    for j in sorted(jots.values(), key=lambda j: -j.get("t", 0)):
+        first = (j.get("text", "").strip().splitlines() or ["note"])[0][:48]
+        name = j.get("file") or safe(time.strftime("%Y-%m-%d %H%M", time.localtime(j.get("t", 0))) + " " + first)
+        j["file"] = name  # kept, so editing the first line later doesn't break links
+        link = j.get("link") or ""
+        md = ["---", f"created: {time.strftime('%Y-%m-%dT%H:%M', time.localtime(j.get('t', 0)))}", "source: Feather quick note", "---", "", j.get("text", "")]
+        if link:
+            md += ["", f"↳ [[{os.path.splitext(os.path.basename(link))[0]}]]"]
+        open(os.path.join(qd, name + ".md"), "w", encoding="utf-8").write("\n".join(md) + "\n")
+        idx.append(f"- [[{name}]]" + (f" → [[{os.path.splitext(os.path.basename(link))[0]}]]" if link else ""))
+        if link:  # add a link line to the chosen note once; it lives in Feather\Notes
+            tgt = os.path.normpath(os.path.join(nd, link))
+            if tgt.startswith(os.path.normpath(nd) + os.sep) and os.path.isfile(tgt):
+                cur = open(tgt, encoding="utf-8", errors="ignore").read()
+                if f"[[{name}]]" not in cur:
+                    open(tgt, "a", encoding="utf-8").write(("" if cur.endswith("\n") or not cur else "\n") + f"- [[{name}]]\n")
+    open(os.path.join(vault, folder, "Quick Notes.md"), "w", encoding="utf-8").write("\n".join(idx) + "\n")
+    return len(jots)
+
+
+# ---------- idea board: one note per idea in Feather\\Ideas, threads as [[links]], dropped files copied next to them ----------
+def export_ideas(P, vault, folder):
+    I = P.data.get("ideas") or {}
+    cards = I.get("cards") or []
+    out = os.path.join(vault, folder, "Ideas")
+    if not cards and not os.path.isdir(out):
+        return 0
+    os.makedirs(os.path.join(out, "files"), exist_ok=True)
+    names, taken = {}, set()
+    for c in cards:
+        base = safe(c.get("title") or c.get("fname") or "idea")[:80]
+        n, k = base, 2
+        while n.lower() in taken:
+            n, k = f"{base} ({k})", k + 1
+        names[c["id"]], _ = n, taken.add(n.lower())
+    nb = {}
+    for l in I.get("links") or []:
+        nb.setdefault(l.get("a"), []).append(l.get("b"))
+        nb.setdefault(l.get("b"), []).append(l.get("a"))
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    for c in cards:
+        md = ["---", f"tag: {c.get('tag', 'IDEA')}", "source: Feather idea board", "---", "", f"# {c.get('title') or c.get('fname', '')}", ""]
+        if c.get("kind") == "file" and c.get("fid"):
+            src, fn = os.path.join(P.data_dir, "ideas", c["fid"] + ".enc"), safe(c.get("fname") or c["fid"])
+            dst = os.path.join(out, "files", fn)
+            if os.path.isfile(src) and not os.path.exists(dst):
+                raw = open(src, "rb").read()
+                open(dst, "wb").write(AESGCM(P.key).decrypt(raw[:12], raw[12:], b"feather-idea"))
+            md += [f"![[{fn}]]", ""]
+        if c.get("body"):
+            md += [c["body"], ""]
+        tied = [names[b] for b in nb.get(c["id"], []) if b in names]
+        if tied:
+            md += ["## Tied to"] + [f"- [[{t}]]" for t in tied]
+        open(os.path.join(out, names[c["id"]] + ".md"), "w", encoding="utf-8").write("\n".join(md) + "\n")
+    keep = {n + ".md" for n in names.values()}
+    for fn in os.listdir(out):  # ideas renamed or removed on the board: tidy their old notes (only ones Feather wrote)
+        f = os.path.join(out, fn)
+        if fn.endswith(".md") and fn not in keep and "source: Feather idea board" in open(f, encoding="utf-8", errors="ignore").read(400):
+            os.remove(f)
+    idx = ["# Idea board", "From Feather. Edit ideas on the board; these notes are rewritten at each sync.", ""] + [f"- [[{names[c['id']]}]] · {c.get('tag', 'IDEA')}" for c in cards]
+    open(os.path.join(vault, folder, "Idea board.md"), "w", encoding="utf-8").write("\n".join(idx) + "\n")
+    return len(cards)
 
 
 # ---------- Paper: handwritten pages -> PNGs in Obsidian ----------
@@ -676,9 +755,20 @@ def apply_calendar_changes(archie, changes):
         lines = open(dl_p, encoding="utf-8").read().split("\n")
     except OSError:
         lines = ["# DEADLINES - Archie counts down to these in the morning brief.", "# Format:  YYYY-MM-DD | what it is", ""]
+    done_p = os.path.join(archie, "feather_calq_done.json")   # each queued change is applied once, even if a laptop sends it again
+    try:
+        done = json.load(open(done_p, encoding="utf-8"))
+    except (OSError, ValueError):
+        done = []
+    seen = set(done)
     n = 0
     for c in changes:
         op, it = c.get("op"), c.get("item", {})
+        key = f"{op}|{it.get('id')}|{c.get('t')}|{it.get('date')}|{it.get('what')}"
+        if key in seen:
+            continue
+        seen.add(key)
+        done.append(key)
         old_ev = None
         if op in ("edit", "del"):
             if it.get("src") in ("cal", "calt"):  # calt: an event Feather only knows by its title and date
@@ -702,6 +792,8 @@ def apply_calendar_changes(archie, changes):
             if it.get("kind") == "deadline":
                 lines.append(f"{date} | {what}")
             else:
+                if op == "add" and any(e.get("title") == what and e.get("date") == date and (e.get("time") or None) == (it.get("time") or None) for e in events):
+                    continue   # already there: don't make a twin
                 ev = dict(old_ev or {"id": uuid.uuid4().hex[:10], "notes": "", "repeat": None, "until": None})
                 ev.update({"title": what, "date": date, "time": it.get("time") or None, "kind": it.get("kind") if it.get("kind") in CAL_KINDS else "event"})
                 events.append(ev)
@@ -715,7 +807,14 @@ def apply_calendar_changes(archie, changes):
     with open(dl_p + ".tmp", "w", encoding="utf-8") as f:
         f.write("\n".join(lines).rstrip("\n") + "\n")
     os.replace(dl_p + ".tmp", dl_p)
-    log("calendar:", n, "changes from Feather written to Archie")
+    try:
+        with open(done_p + ".tmp", "w", encoding="utf-8") as f:
+            json.dump(done[-500:], f)
+        os.replace(done_p + ".tmp", done_p)
+    except OSError:
+        pass
+    if n:
+        log("calendar:", n, "changes from Feather written to Archie")
     return n
 
 
@@ -796,6 +895,24 @@ def world_snapshot(archie, dest):
     return len(stories), len(govs)
 
 
+LOADOUT_MANIFEST = """{
+  "manifest": 2,
+  "id": "feather",
+  "name": "FEATHER",
+  "version": "1.0.0",
+  "tagline": "Study: notes, cards, paper, offline AI",
+  "icon": "feather",
+  "color": "#e8a23a",
+  "order": 4,
+  "entry": "run.bat",
+  "needs": { "python": false, "edge": true, "removable": false, "admin": false, "network": "local" },
+  "data_dirs": ["data"],
+  "compat": { "os": ["windows"] },
+  "x-note": "Carries its own Python (python\\\\), encryption library (lib\\\\) and offline model (llm\\\\). Your notes stay encrypted in data\\\\ with the salt in feather.id."
+}
+"""
+
+
 def update_app(root):
     """Keep the app on the stick the same as D:\\Feather\\app, so updates land just by plugging in."""
     src, dst = os.path.join(BASE, "app"), os.path.join(root, "app")
@@ -824,7 +941,13 @@ def update_app(root):
     name = os.path.basename(root)
     start = f'@echo off\r\ncd /d "%~dp0{name}"\r\nstart "" python\\pythonw.exe app\\feather.py\r\n'
     for fn, body in [(os.path.join(top, "Start Feather.bat"), start),
-                     (os.path.join(root, "Feather Demo.bat"), '@echo off\r\ncd /d "%~dp0"\r\nstart "" python\\pythonw.exe app\\feather.py --demo\r\n')]:
+                     (os.path.join(root, "Feather Demo.bat"), '@echo off\r\ncd /d "%~dp0"\r\nstart "" python\\pythonw.exe app\\feather.py --demo\r\n'),
+                     # a Feather stick folder is also a LOADOUT module: drop it in LOADOUT\library and it shows up as a card
+                     (os.path.join(root, "run.bat"), '@echo off\r\ncd /d "%~dp0"\r\nstart "" python\\pythonw.exe app\\feather.py\r\n'),
+                     (os.path.join(root, "module.json"), LOADOUT_MANIFEST),
+                     # Feather everywhere: put Feather on a laptop for good (it then stays in step through this PC)
+                     (os.path.join(root, "Install Feather on this laptop.bat"),
+                      '@echo off\r\ntitle Install Feather on this laptop\r\ncd /d "%~dp0"\r\n"python\\python.exe" "app\\install_laptop.py"\r\necho.\r\npause\r\n')]:
         try:
             old = open(fn, newline="").read() if os.path.exists(fn) else None
         except OSError:
@@ -1059,7 +1182,7 @@ def sync_vault(drive, root, archie, cfg):
 BANNER_EXT = (".jpg", ".jpeg", ".png", ".webp", ".bmp")
 
 
-def sync_banners(root, archie):
+def sync_banners(root, archie, max_w=1800):
     src = os.path.join(archie, "Banners")
     if not os.path.isdir(src):
         return 0
@@ -1082,8 +1205,8 @@ def sync_banners(root, archie):
             if Image:
                 with Image.open(a) as im:
                     im = im.convert("RGB")
-                    if im.width > 1800:
-                        im = im.resize((1800, round(im.height * 1800 / im.width)), Image.LANCZOS)
+                    if im.width > max_w:
+                        im = im.resize((max_w, round(im.height * max_w / im.width)), Image.LANCZOS)
                     im.save(b, "JPEG", quality=82, optimize=True)
             elif fn.lower().endswith((".jpg", ".jpeg")):
                 shutil.copy2(a, b)
@@ -1252,12 +1375,27 @@ def sync(drive):
         backup(P, root)
     except Exception as e:
         log("backup failed:", repr(e))
+    hub_line = None
+    try:  # Feather on your laptops: the stick catches up with them (and they with it) through this PC
+        import feather_hub
+        hub_line = feather_hub.HUB.sync_stick(P, root)
+    except Exception as e:
+        import traceback
+        log("laptops merge failed:", traceback.format_exc())
     ef = export_folder(cfg, vault)
     st = P.data.setdefault("settings", {})
     if cfg.get("name") and not st.get("name"):
         st["name"] = cfg["name"]
     books, cards = export(P.data, vault, ef)
     nd = notes_dir(cfg, vault, ef)
+    try:
+        export_jots(P.data, vault, ef, nd)
+    except Exception as e:
+        log("quick notes failed:", repr(e))
+    try:
+        export_ideas(P, vault, ef)
+    except Exception as e:
+        log("idea board failed:", repr(e))
     P.data["notes"] = import_notes(nd, cfg.get("max_note_kb", 200))
     n_read = 0
     try:
@@ -1282,7 +1420,7 @@ def sync(drive):
         log("paper failed:", repr(e))
     P.save()
     P.lock()
-    lines = [f"{books} book logs, {cards} flashcards, exams → Obsidian",
+    lines = [*([hub_line] if hub_line else []), f"{books} book logs, {cards} flashcards, exams → Obsidian",
              *([f"✎ {n_paper} new page{'s' if n_paper != 1 else ''} → Obsidian (Paper)"] if n_paper else []), *([f"Calendar: {n_cal} change{'s' if n_cal != 1 else ''} → Archie"] if n_cal else []), f"{n_notes} notes" + (f" + {n_read} readings" if n_read else "") + " → Feather"]
     archie = find_archie(cfg)
     if archie:
@@ -1337,10 +1475,23 @@ def feather_drives():
     return {L for i, L in enumerate(string.ascii_uppercase) if mask >> i & 1 and any(os.path.exists(f"{L}:\\{p}") for p in ids)}
 
 
+def dumont_owns(L):
+    """A DUMONT Field Kit stick while DUMONT is running on this PC: DUMONT runs Feather's sync itself, inside its own
+    sync (one sync, one eject). DUMONT touches this file every few seconds while it watches for its stick."""
+    if not os.path.exists(f"{L}:\\DUMONT\\kit.json"):
+        return False
+    try:
+        return time.time() - os.path.getmtime(os.path.join(os.environ.get("LOCALAPPDATA", ""), "DUMONT", "fieldkit.alive")) < 30
+    except OSError:
+        return False
+
+
 def main():
     log("sync started from", HERE)
     seen = feather_drives()  # sticks already plugged in when the PC started: sync them once too
     for d in seen:
+        if dumont_owns(d):
+            continue
         try:
             sync(d)
         except Exception as e:
@@ -1350,6 +1501,9 @@ def main():
         now_ = feather_drives()
         for d in now_ - seen:
             time.sleep(2)  # let Windows finish mounting it
+            if dumont_owns(d):
+                log("left to DUMONT", d)
+                continue
             try:
                 sync(d)
             except Exception as e:
@@ -1360,4 +1514,15 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) >= 3 and sys.argv[1] == "--once":  # DUMONT: sync one stick now, quietly, and say how it went
+        QUIET = {}
+        try:
+            sync(sys.argv[2].rstrip(":\\")[:1].upper())
+            out = {"ok": QUIET.get("title", "").startswith("Feather updated"), **QUIET}
+        except Exception as e:
+            import traceback
+            log("sync failed:", traceback.format_exc())
+            out = {"ok": False, "title": "Feather sync hit a problem", "lines": [str(e)[:160]]}
+        print("FEATHER-RESULT " + json.dumps(out), flush=True)
+    else:
+        main()

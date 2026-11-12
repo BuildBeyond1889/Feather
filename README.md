@@ -49,6 +49,16 @@ Flashcards with spaced review; lasso a question and its answer on a page to make
 The greeting, accent colour and banner shift from morning to late night. The Today strip shows cards due, streaks and the next deadline. The Vault reads offline libraries like Wikipedia; World shows the news from your last sync.
 </td>
 </tr>
+<tr>
+<td width="50%" valign="top">
+<h3>Laptops, stick and phone</h3>
+Install Feather on your laptops from the stick, or open it on your phone as an app. Everything stays encrypted with one password and syncs through Archie on your home PC (at home or over Tailscale). Work offline anywhere; changes catch up later, and drawing on the same page on two devices loses no ink.
+</td>
+<td width="50%" valign="top">
+<h3>Sonia reads to you</h3>
+Ask for a chapter, a range or a whole book and the PC records it in Microsoft's natural Sonia voice (or one of seven others, or an accent voice overnight). It plays offline on the phone and laptops, with the sentence she is reading lit up, and works from the lock screen and earbuds.
+</td>
+</tr>
 </table>
 
 ## Try the demo
@@ -91,7 +101,8 @@ flowchart LR
 | Folder | What's in it |
 |---|---|
 | [`app/`](app) | The app that runs from the stick: the local server, the encrypted store, the offline model, and the interface in `web/`. |
-| [`sync/`](sync) | The PC side: background sync with Obsidian and Archie, book parsing, and making sticks. |
+| [`sync/`](sync) | The PC side: background sync with Obsidian and Archie, book parsing, making sticks, the hub that runs inside Archie for the phone and laptops, and Sonia's chapter maker. |
+| [`phone/`](phone) | Feather on the phone: an installable web app, encrypted on the device, served by Archie on the PC. |
 | [`runtime/`](runtime) | Files copied onto the stick so it runs on any laptop. |
 | [`docs/`](docs) | Security, accessibility, screenshots. |
 | [`icon/`](icon) | The quill icon. |

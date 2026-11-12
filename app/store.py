@@ -5,7 +5,7 @@ encrypted with AES-256-GCM. The key comes from your password (scrypt), and is on
 feather.id (not secret) holds the salt, so the same password always gives the same key.
 Sticks made before the rename (pocket.id, data/pocket.enc) are renamed in place the first time they're opened.
 """
-import json, os, time, uuid, hashlib, secrets
+import json, os, time, uuid, hashlib, secrets, threading
 
 try:
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -50,6 +50,7 @@ class Stick:
             json.dump(self.meta, open(self.id_file, "w"))
         self.key = None
         self.data = None
+        self._wlock = threading.Lock()  # one save at a time: concurrent saves raced on the temp file and could corrupt the store
 
     # --- keys ---
     def derive(self, password):
@@ -84,15 +85,23 @@ class Stick:
     def save(self):
         if self.key is None:
             return
-        self.data["updated"] = now()
-        nonce = os.urandom(12)
-        blob = nonce + AESGCM(self.key).encrypt(nonce, json.dumps(self.data, ensure_ascii=False).encode("utf-8"), AAD)
-        tmp = self.file + ".tmp"
-        with open(tmp, "wb") as f:
-            f.write(blob)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, self.file)  # never a half-written file, even if the stick is pulled
+        with self._wlock:  # serialize: two threads saving at once used to race on the temp file (WinError 2 / 32) and could corrupt it
+            self.data["updated"] = now()
+            nonce = os.urandom(12)
+            blob = nonce + AESGCM(self.key).encrypt(nonce, json.dumps(self.data, ensure_ascii=False).encode("utf-8"), AAD)
+            tmp = f"{self.file}.{os.getpid()}.{threading.get_ident()}.tmp"  # unique per writer, so a stray concurrent save can't clobber it
+            try:
+                with open(tmp, "wb") as f:
+                    f.write(blob)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp, self.file)  # never a half-written file, even if the stick is pulled
+            finally:
+                if os.path.exists(tmp):
+                    try:
+                        os.remove(tmp)
+                    except OSError:
+                        pass
 
     def _aad(self, path):
         """Which kind of encrypted file this is (each kind is bound to its own label)."""
@@ -100,6 +109,8 @@ class Stick:
         if parent == "paper":  # pictures are "a" + 12 hex characters; pages are 12 hex characters (which can start with "a" too)
             stem = name[:-4]
             return b"feather-asset" if len(stem) == 13 and stem.startswith("a") else b"feather-paper"
+        if parent == "ideas":  # files dropped on the idea board
+            return b"feather-idea"
         if parent == "readings":
             return b"feather-book" if name.endswith(".book.enc") else b"feather-file"
         return None

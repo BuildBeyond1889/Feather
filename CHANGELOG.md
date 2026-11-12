@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.2 · Nov 12, 2026 · Phone, Sonia and Shelf
+
+- **Feather on your phone.** An installable app (`phone/`) served by Archie on the home PC over Tailscale: Home, Read, Cards, Shelf and More. It works offline and keeps everything encrypted on the phone with the same password. Fingerprint unlock is available after the first password.
+- **The hub moved into Archie.** Phone, laptops and the stick all sync through Archie on the PC (`sync/feather_hub.py`). The stick watcher still runs with Windows for plug-in syncs.
+- **Sonia reads your books.** Ask for a chapter, a range or the whole book from the phone, a laptop or Archie. The PC makes it with Microsoft's Sonia voice, or one of seven others, or an accent voice overnight. It plays offline with the sentence she is reading lit up, and works from the lock screen and earbuds. Speed, volume and voice are saved and shared across devices. An overnight reader makes the next few chapters of what you're reading.
+- **Shelf.** Send books, flashcard decks and mock exams between Feather and Archie, only when you press send, get or request.
+- **Home on the phone:**
+  - Next up with the event's name; tap it for a **Coming up** calendar (add, edit, remove; changes go to Archie at the next sync).
+  - **Today** (today's events and cards due, with your streak).
+  - **Sonia** (chapters ready on the phone), **Quiz me** (your latest mock exam) and **World** (the day's biggest stories from Archie).
+  - Banner paintings and quotes from Archie.
+- **Quick notes from Archie.** "note to feather: …" in Archie, or a Markdown file on its inbox card, lands in Feather on every device.
+- **Laptops:** a Sonia player in the reader with a "Sonia ⌄" menu, the Shelf page, Ideas and Nest pages, and the opening animation.
+
+## 1.1 · Feather everywhere
+
+- **Install on a laptop.** `Install Feather on this laptop.bat` on the stick puts Feather on the laptop for good, with your data, still encrypted, same password.
+- **Sync through the PC.** Installed copies keep themselves the same through the home PC (Archie's sealed connection, at home or over Tailscale). Changes made offline wait and go later.
+- **Paper merges stroke by stroke.** Drawing the same page on two laptops loses no ink. Quick notes, flashcards and idea cards edited on both keep both versions.
+- **Small additions only:** a sync badge in the menu, "1 new" dots, a "From the Surface" card on Home, "on the ThinkPad too" under Paper's saved label, and Devices & sync in Settings.
+- **The stick still works on its own** and catches up with the laptops when it is plugged into the PC.
+
 ## 1.0 — October 2026
 
 The first release under the name Feather (it started as Archie Pocket).

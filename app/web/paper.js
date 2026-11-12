@@ -224,6 +224,20 @@ function loadPdfJs() {
   return PDFJS;
 }
 const toDataURL = (c, type = "image/jpeg") => c.toDataURL(type, 0.86);
+// Feather everywhere: "saved · encrypted" grows "· on the ThinkPad too" once the page has reached your other laptop
+function syncWhere(pid) {
+  if (!(typeof S !== "undefined" && S.sync && S.sync.on)) return;
+  clearTimeout(syncWhere.t);
+  const waits = [3000, 6000, 12000, 25000, 60000]; let i = 0;
+  const step = async () => {
+    const el = $("#psaved"); if (!el || !el.textContent.startsWith("saved · encrypted")) return;
+    let w; try { w = await api("sync/where", { pid }); } catch (e) { return; }
+    const tag = w.where === "both" ? `on ${/^the /i.test(w.other) ? "" : "the "}${esc(w.other)} too` : w.where === "pc" ? "on your PC" : "";
+    if (tag) { el.innerHTML = `saved · encrypted<small class="psync">${tag}</small>`; el.title = "saved · encrypted · " + el.querySelector("small").textContent; }
+    if (w.where !== "both" && i < waits.length) syncWhere.t = setTimeout(step, waits[i++]);
+  };
+  syncWhere.t = setTimeout(step, waits[i++]);
+}
 function progress(msg) { let el = $("#pprog"); if (!el) { el = document.createElement("div"); el.id = "pprog"; el.className = "pprog"; document.body.appendChild(el); } if (msg) el.innerHTML = `<span class="spin"></span> ${esc(msg)}`; else el.remove(); }
 async function pdfPages(buf, name) {  // -> [{bg, h}] after storing each page picture encrypted
   const lib = await loadPdfJs();
@@ -452,7 +466,7 @@ async function paperBook(nbid, pgid) {
     if (!dirty) return; dirty = false; clearTimeout(saveT);
     const pid = page.id, out = strokes.map((s) => (s.k === "t" ? { k: "t", text: s.text, sticky: !!s.sticky, c: s.c, fs: s.fs || 22, ff: tFF(s), ...(s.col ? { col: true } : {}), x: Math.round(s.x), y: Math.round(s.y), w: Math.round(s.w), h: Math.round(s.h) } : s.k === "i" ? { k: "i", a: s.a, x: Math.round(s.x), y: Math.round(s.y), w: Math.round(s.w), h: Math.round(s.h) } : { k: s.k, c: s.c, w: s.w, p: s.p.map((v, i) => (i % 3 === 2 ? Math.round(v * 100) / 100 : Math.round(v * 10) / 10)) }));
     cache[pid] = strokes;
-    try { await api("paper/save", { nb: nbid, pid, strokes: out }); $("#psaved").textContent = "saved · encrypted"; thumb(pid); if (!flipMode) recognizeSoon(pid); }
+    try { await api("paper/save", { nb: nbid, pid, strokes: out }); $("#psaved").textContent = "saved · encrypted"; syncWhere(pid); thumb(pid); if (!flipMode) recognizeSoon(pid); }
     catch (e) { $("#psaved").textContent = "not saved: " + e.message; dirty = true; }
   }
   function recognizeSoon(pid) {  // read the handwriting for search a few seconds after you stop writing

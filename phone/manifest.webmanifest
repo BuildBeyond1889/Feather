@@ -1,0 +1,80 @@
+{
+  "name": "Feather",
+  "short_name": "Feather",
+  "description": "Feather on your phone: reading (and Read to me), flashcards, quick notes, in step with your laptops.",
+  "id": "/feather/",
+  "start_url": "/feather/#home",
+  "scope": "/feather/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0b0b0b",
+  "theme_color": "#0b0b0b",
+  "icons": [
+    {
+      "src": "/feather/icon-256.png",
+      "sizes": "256x256",
+      "type": "image/png"
+    },
+    {
+      "src": "/feather/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    },
+    {
+      "src": "/feather/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Review flashcards",
+      "url": "/feather/#cards",
+      "icons": [
+        {
+          "src": "/feather/icon-256.png",
+          "sizes": "256x256"
+        }
+      ]
+    },
+    {
+      "name": "Continue reading",
+      "url": "/feather/#continue",
+      "icons": [
+        {
+          "src": "/feather/icon-256.png",
+          "sizes": "256x256"
+        }
+      ]
+    },
+    {
+      "name": "Quick note",
+      "url": "/feather/#note",
+      "icons": [
+        {
+          "src": "/feather/icon-256.png",
+          "sizes": "256x256"
+        }
+      ]
+    }
+  ],
+  "share_target": {
+    "action": "/feather/share",
+    "method": "POST",
+    "enctype": "multipart/form-data",
+    "params": {
+      "title": "title",
+      "text": "text",
+      "url": "url",
+      "files": [
+        {
+          "name": "file",
+          "accept": [
+            "*/*"
+          ]
+        }
+      ]
+    }
+  }
+}

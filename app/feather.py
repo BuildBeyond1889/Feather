@@ -10,15 +10,37 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 APP = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(APP)  # <stick>\Feather
 DEMO = "--demo" in sys.argv
-FEATHER_VERSION = "1.0"
+FEATHER_VERSION = "1.2"
 
 
 def demo_pw():
     import demo
     return demo.PASSWORD
+INSTALLED = os.path.exists(os.path.join(ROOT, "installed.json")) and not DEMO  # Feather installed on this laptop (not the stick)
+
+
+def apply_update():
+    """An installed Feather gets app updates from your PC while it runs; they're put in place here, at the next start."""
+    nxt = os.path.join(ROOT, "app.next")
+    if not INSTALLED or not os.path.isdir(nxt):
+        return
+    import shutil
+    for r, _, fs in os.walk(nxt):
+        for fn in fs:
+            src = os.path.join(r, fn)
+            dst = os.path.join(APP, os.path.relpath(src, nxt))
+            try:
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                os.replace(src, dst)
+            except OSError:
+                pass
+    shutil.rmtree(nxt, ignore_errors=True)
+
+
+apply_update()
 sys.path.insert(0, os.path.join(ROOT, "lib"))
 sys.path.insert(0, APP)
-import store, ai, world, vault, mathtutor, searchidx  # noqa: E402
+import store, ai, world, vault, mathtutor, searchidx, fsync  # noqa: E402
 import traceback  # noqa: E402
 
 LOG = os.path.join(ROOT, "feather.log")  # errors only, never your notes or password
@@ -46,6 +68,46 @@ last_ping = [time.time()]
 last_action = [time.time()]
 IDLE_LOCK = 15 * 60
 INUSE = os.path.join(P.data_dir, "in-use")
+SYNC = [None]  # the sync with your PC (installed copies only), running while Feather is unlocked
+SERVED = {}  # Paper page id -> the strokes the window has, so a save can merge in strokes that arrived meanwhile
+
+
+def device():
+    try:
+        d = json.load(open(os.path.join(ROOT, "installed.json"), encoding="utf-8"))
+    except (OSError, ValueError):
+        d = {}
+    import socket
+    return d.get("name") or socket.gethostname(), d
+
+
+def start_sync():
+    if not INSTALLED or P.data is None:
+        return
+    import socket
+    if SYNC[0] is None or SYNC[0].P is not P:
+        name, info = device()
+        if info.get("lite_data"):
+            os.environ["FEATHER_LITE_DATA"] = info["lite_data"]
+        SYNC[0] = fsync.Client(P, fsync.LiteTransport(ROOT, P.meta["id"]), info.get("host") or socket.gethostname(), name,
+                               app_dir=APP, next_dir=os.path.join(ROOT, "app.next"))
+        SYNC[0].diag = key_report
+    SYNC[0].start()
+
+
+def lock_all(final_sync=True):
+    """Save and lock. On an installed copy, what changed goes to your PC first (if it's reachable)."""
+    if P.data is not None:
+        if SYNC[0] is not None:
+            try:
+                SYNC[0].stop(final=final_sync)
+            except Exception as e:
+                log("last sync:", repr(e))
+        P.save()
+        P.lock()
+    BOOKS.clear()
+    IDX.clear()
+    SERVED.clear()
 
 
 BANNERS = os.path.join(ROOT, "banners")
@@ -460,6 +522,35 @@ class H(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "private, max-age=3600")
             self.end_headers()
             return self.wfile.write(b)
+        if p.startswith("/sonia-audio/"):  # a chapter read by Sonia, decrypted in memory, only while Feather is unlocked
+            mm = re.fullmatch(r"/sonia-audio/([0-9a-f]{12})/(\d{1,4})", p)
+            f = os.path.join(P.data_dir, "sonia", mm.group(1), mm.group(2) + ".a.enc") if mm else ""
+            if P.data is None or not mm or not os.path.isfile(f):
+                return self.send_error(404)
+            from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+            raw = open(f, "rb").read()
+            b = AESGCM(P.key).decrypt(raw[:12], raw[12:], b"feather-audio")
+            self.send_response(200)
+            self.send_header("Content-Type", "audio/mpeg")
+            self.send_header("Content-Length", str(len(b)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            return self.wfile.write(b)
+        if p.startswith("/idea-file/"):  # a file from the idea board, decrypted in memory, only while Feather is unlocked
+            fid = re.sub(r"[^0-9a-z]", "", p[len("/idea-file/"):])[:16]
+            m = (P.data or {}).get("ideafiles", {}).get(fid)
+            f = os.path.join(P.data_dir, "ideas", fid + ".enc")
+            if P.data is None or not m or not os.path.isfile(f):
+                return self.send_error(404)
+            from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+            raw = open(f, "rb").read()
+            b = AESGCM(P.key).decrypt(raw[:12], raw[12:], b"feather-idea")
+            self.send_response(200)
+            self.send_header("Content-Type", m["type"] if re.fullmatch(r"(application/pdf|image/(png|jpeg|gif|webp))", m["type"]) else "application/octet-stream")
+            self.send_header("Content-Length", str(len(b)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            return self.wfile.write(b)
         if p.startswith("/reading/"):  # one of your PDFs, decrypted in memory, only while Feather is unlocked
             rid = re.sub(r"[^0-9a-f]", "", p[len("/reading/"):])[:12]
             r = (P.data or {}).get("readings", {}).get(rid)
@@ -601,18 +692,35 @@ class H(BaseHTTPRequestHandler):
         if what == "page":  # one page's strokes
             f = pfile(d.get("pid"))
             if not os.path.exists(f):
+                SERVED[clean(d.get("pid"))] = []
                 return J(self, {"strokes": []})
             raw = open(f, "rb").read()
-            return J(self, json.loads(AESGCM(P.key).decrypt(raw[:12], raw[12:], b"feather-paper")))
+            pg = json.loads(AESGCM(P.key).decrypt(raw[:12], raw[12:], b"feather-paper"))
+            if INSTALLED:
+                SERVED[clean(d.get("pid"))] = pg.get("strokes", [])
+            return J(self, pg)
         if what == "save":  # strokes for one page (called a moment after you stop drawing)
             pid = clean(d.get("pid"))
             if not any(pg["id"] == pid for pg in nb["pages"]):
                 return J(self, {"error": "No such page."}, 404)
-            body = json.dumps({"strokes": d.get("strokes", [])}, separators=(",", ":")).encode()
+            strokes = d.get("strokes", [])
+            mine = strokes
+            if INSTALLED and pid in SERVED and os.path.exists(pfile(pid)):  # strokes from another laptop may have arrived while this page was open
+                try:
+                    raw = open(pfile(pid), "rb").read()
+                    cur = json.loads(AESGCM(P.key).decrypt(raw[:12], raw[12:], b"feather-paper")).get("strokes", [])
+                    strokes = fsync.merge_strokes(SERVED[pid], mine, cur)
+                except Exception as e:
+                    log("page merge:", repr(e))
+            body = json.dumps({"strokes": strokes}, separators=(",", ":")).encode()
             nonce = secrets.token_bytes(12)
             tmp = pfile(pid) + ".tmp"
             open(tmp, "wb").write(nonce + AESGCM(P.key).encrypt(nonce, body, b"feather-paper"))
             os.replace(tmp, pfile(pid))
+            if INSTALLED:
+                SERVED[pid] = mine
+                if SYNC[0] is not None:
+                    SYNC[0].kick(2)  # each stroke goes to your PC a moment after you lift the pen
             return J(self, {"ok": True})
         if what == "addpage":
             pg = newpage(d.get("tpl"))
@@ -670,7 +778,7 @@ class H(BaseHTTPRequestHandler):
         nch = len(book["ch"])
         if what == "open":
             if not bk:  # the Reading tab tracks it like a paper book: place, chapter notes, quotes
-                bid = store.new_id()
+                bid = "rd" + rid  # the same id your phone gives it, so the two never end up as two books
                 bk = D["books"][bid] = {"id": bid, "title": book.get("title") or r["name"], "author": book.get("author", ""), "pages": nch, "digital": rid,
                                         "started": store.now(), "t": store.now(), "chapters": {}, "quotes": [], "people": [], "log": [], "progress": {"page": 1, "chapter": book["ch"][0]["t"]}}
                 P.save()
@@ -718,6 +826,77 @@ class H(BaseHTTPRequestHandler):
                 bk.setdefault("quotes", []).append({"id": store.new_id(), "text": str(d.get("text", ""))[:2000], "page": ch + 1, "chapter": book["ch"][min(ch, nch - 1)]["t"], "t": store.now()})
                 P.save()
             return J(self, {"ok": True})
+        # ---- the chapter panel (the bubble in the reader): your notes pinned to a spot, bookmarks, people, recap, ask ----
+        pins = D.setdefault("pins", {}).setdefault(rid, [])
+        if what in ("panel", "pin", "chmeta", "recap", "ask"):
+            ch = max(0, min(nch - 1, int(d.get("ch", 0) or 0)))
+            ct = book["ch"][ch]["t"]
+            paras = book["ch"][ch]["p"]
+            p = max(0, min(max(0, len(paras) - 1), int(d.get("p", 0) or 0)))
+        if what == "panel":
+            cm = ((bk or {}).get("chapters") or {}).get(ct) or {}
+            return J(self, {"ch": ch, "t": ct, "n": nch, "paras": len(paras), "notes": cm.get("notes", ""), "tags": cm.get("tags", []), "people": cm.get("people", []),
+                            "allpeople": (bk or {}).get("people", []), "recap": D.get("recaps", {}).get(rid, {}).get(str(ch)), "pins": pins, "marks": marks,
+                            "book": bk["id"] if bk else None, "now": store.now()})
+        if what == "live":  # what the reader checks every few seconds, so highlights and notes from your other devices show up
+            return J(self, {"sig": fsync.sha(fsync.canon([marks, pins]).encode()), "marks": marks, "pins": pins, "now": store.now()})
+        if what == "pin":  # a note pinned to a paragraph, or a bookmark
+            op, m = d.get("op"), d.get("pin") or {}
+            if op == "add":
+                m = {"id": store.new_id(), "k": "bm" if m.get("k") == "bm" else "note", "ch": ch, "p": p, "note": str(m.get("note", "")).strip()[:8000],
+                     "text": (paras[p] if paras else "")[:200], "t": store.now(), "src": "laptop"}
+                pins.append(m)
+            elif op == "edit":
+                for x in pins:
+                    if x.get("id") == m.get("id") and "note" in m:
+                        x["note"], x["e"] = str(m["note"]).strip()[:8000], store.now()
+            elif op == "del":
+                pins[:] = [x for x in pins if x.get("id") != m.get("id")]
+            P.save()
+            return J(self, {"pins": pins, "id": m.get("id")})
+        if what == "chmeta":  # this chapter's tags and people (the same chapter entry as the book page)
+            if not bk:
+                return J(self, {"error": "Open the book once first."}, 409)
+            c = bk.setdefault("chapters", {}).setdefault(ct, {"notes": "", "tags": [], "t": store.now()})
+            if "tags" in d:
+                c["tags"] = [str(x).strip()[:40] for x in d.get("tags") or [] if str(x).strip()][:24]
+            if "people" in d:
+                c["people"] = list(dict.fromkeys(str(x).strip()[:60] for x in d.get("people") or [] if str(x).strip()))[:60]
+                bp = bk.setdefault("people", [])
+                for x in c["people"]:
+                    if x not in bp:
+                        bp.append(x)
+            c["t"] = bk["t"] = store.now()
+            P.save()
+            return J(self, {"tags": c.get("tags", []), "people": c.get("people", []), "allpeople": bk.get("people", [])})
+        if what == "recap":  # only what you've read so far in this chapter goes in, so nothing ahead can leak out
+            sofar = paras[:p + 1]
+            text = "\n\n".join(sofar)[-7000:]
+            out, how = None, "model"
+            if text.strip() and ai.available():
+                out = ai.chat([{"role": "system", "content": "Recap the passage for a reader who wants to keep track. Use ONLY the text given: it is everything they have read of this chapter so far. "
+                                "Never mention or hint at anything that happens later in the book. 3 to 5 plain sentences, no lists, no preamble."},
+                               {"role": "user", "content": f"Book: {book.get('title') or r['name']}. Chapter: {ct}.\n\n{text}"}], max_tokens=260)
+            if not out:
+                how = "picked"
+                terms = set(ai.key_terms(text)[:15])
+                ss = [x for para in sofar for x in ai.sentences(para)]
+                score = lambda x: sum(1 for w in re.findall(r"[A-Za-z][A-Za-z\-]{3,}", x.lower()) if w in terms)
+                keep = set(sorted(range(len(ss)), key=lambda i: -score(ss[i]))[:4])
+                out = " ".join(ss[i] for i in sorted(keep)) or (sofar[0][:400] if sofar else "Nothing read in this chapter yet.")
+            rc = D.setdefault("recaps", {}).setdefault(rid, {})
+            rc[str(ch)] = {"text": out.strip(), "p": p, "t": store.now(), "how": how}
+            P.save()
+            return J(self, rc[str(ch)])
+        if what == "ask":
+            q = (d.get("q") or "").strip()[:600]
+            if not q:
+                return J(self, {"answer": ""})
+            text = "\n\n".join(paras[:p + 1])[-6000:]
+            out = ai.chat([{"role": "system", "content": "You are a reading companion. Answer using the passage (everything the reader has read of this chapter so far) and general knowledge, "
+                            "but NEVER reveal anything that happens later in the book. If you're unsure whether something is a spoiler, don't say it. Keep it short."},
+                           {"role": "user", "content": f"Book: {book.get('title') or r['name']}. Chapter: {ct}.\n\nPassage so far:\n{text}\n\nQuestion: {q}"}], max_tokens=320) if ai.available() else None
+            return J(self, {"answer": out or "The model isn't on this laptop right now, so I can't answer. Your notes are still saved."})
         if what == "find":
             q = (d.get("q") or "").strip().lower()
             out = []
@@ -805,6 +984,35 @@ class H(BaseHTTPRequestHandler):
             return J(self, {"ok": True})
         return J(self, {"error": "Unknown."}, 404)
 
+    def sync_api(self, what, d):
+        """Devices & sync: the sidebar badge, the "1 new" dots, the home card, Settings."""
+        c = SYNC[0]
+        name, info = device()
+        if c is None:
+            return J(self, {"on": False, "installed": INSTALLED, "name": name if INSTALLED else "the stick"})
+        if what == "now":
+            c.kick(0)
+            for _ in range(60):
+                time.sleep(0.5)
+                if not c.busy and c.kick_at is None:
+                    break
+        elif what == "seen":
+            c.seen(str(d.get("k") or ""))
+        elif what == "dismiss":
+            c.dismiss()
+        elif what == "where":
+            return J(self, c.where(re.sub(r"[^0-9a-f]", "", str(d.get("pid") or ""))[:12]))
+        elif what == "name":
+            nm = " ".join(str(d.get("name") or "").split())[:30]
+            if nm:
+                info["name"] = nm
+                json.dump(info, open(os.path.join(ROOT, "installed.json"), "w", encoding="utf-8"))
+                c.name = nm
+                c.kick(0)
+        v = c.view()
+        v.update(installed=True, model=info.get("model") or "")
+        return J(self, v)
+
     def do_POST(self):
         if not self.trusted(post=True):
             return self.send_error(403)
@@ -812,9 +1020,11 @@ class H(BaseHTTPRequestHandler):
 
     def api(self, m, p, d):
         last_ping[0] = time.time()
-        if p != "/api/ping":
+        if p not in ("/api/ping", "/api/reader/live"):  # the reader checking for news isn't you doing something
             last_action[0] = time.time()
         try:
+            if SYNC[0] is not None and m == "POST" and not p.startswith(("/api/sync", "/api/ping", "/api/reader/live", "/api/jserr", "/api/state", "/api/search", "/api/home", "/api/paper/page", "/api/paper/list", "/api/paper/get", "/api/paper/save", "/api/paper/text")):
+                SYNC[0].kick(10)
             return self.route(p, d)
         except Exception as e:
             log("error on", p, traceback.format_exc())
@@ -823,9 +1033,15 @@ class H(BaseHTTPRequestHandler):
     def route(self, p, d):
         if p == "/api/version":
             return J(self, {"v": VERSION})
+        if p in ("/api/toggle", "/api/show"):  # Ctrl+Alt+F (from the key helper), or Feather opened again while hidden
+            return J(self, {"window": toggle_window(show_only=p == "/api/show")})
         if p == "/api/ping":
             bye_at[0] = 0
             return J(self, {"ok": True, "locked": P.data is None, "model": ai.status()})
+        if p == "/api/jserr":  # a screen hit an error: kept for your PC's sync log, so it can be fixed from there
+            KEYS["jserr"] = (str(d.get("where", ""))[:60] + ": " + str(d.get("msg", ""))[:300]).strip()
+            log("screen error:", KEYS["jserr"])
+            return J(self, {"ok": True})
         if p == "/api/bye":  # the window is closing (or reloading: then a ping follows within seconds)
             bye_at[0] = time.time()
             return J(self, {"ok": True})
@@ -833,7 +1049,7 @@ class H(BaseHTTPRequestHandler):
             w = os.path.join(APP, "web")
             build = time.strftime("%m.%d %H:%M", time.localtime(int(VERSION)))
             return J(self, {"exists": P.exists or DEMO, "unlocked": P.data is not None, "model": ai.status(), "llm_log": ai.log_tail(), "build": build,
-                            "version": FEATHER_VERSION, "demo": DEMO})
+                            "version": FEATHER_VERSION, "demo": DEMO, "installed": INSTALLED})
         if p in ("/api/quotes/hidden", "/api/quotes/hide"):  # quotes you never want to see again (not secret: a plain list on the stick)
             hf = os.path.join(P.data_dir, "quotes-hidden.json")
             try:
@@ -867,12 +1083,10 @@ class H(BaseHTTPRequestHandler):
                 threading.Thread(target=ai.start, daemon=True).start()  # warm the model up in the background
                 threading.Thread(target=mathtutor.available, daemon=True).start()  # and load the math engine
                 threading.Thread(target=index_build, args=(P.data,), daemon=True).start()  # and the search index
+                start_sync()  # an installed copy catches up with your PC
             return J(self, {"ok": ok} if ok else {"error": "Wrong password."}, 200 if ok else 403)
         if p == "/api/lock":
-            P.save()
-            P.lock()
-            BOOKS.clear()
-            IDX.clear()
+            lock_all(final_sync=False)  # locking happens now; anything not yet on your PC goes at the next unlock
             return J(self, {"ok": True})
         if p == "/api/eject":
             J(self, {"ok": True})
@@ -893,8 +1107,55 @@ class H(BaseHTTPRequestHandler):
                             "name": D.get("settings", {}).get("name") or "", "toured": bool(D.get("settings", {}).get("toured")), "deadlines": [x for x in D.get("deadlines", []) if x.get("date", "") >= time.strftime("%Y-%m-%d")][:5], "calq": len(D.get("calq", [])),
                             "world": [{k: s.get(k) for k in ("title", "n", "place", "region", "last")} for s in world.news().get("pc", [])[:4]],
                             "docs": len(D.get("readings", {})), "reviews": review_week(D), "math": math_summary(D), "today": today_strip(D),
-                            "libs": len(vault._files()) if os.path.isdir(vault.VDIR) else 0})
+                            "libs": len(vault._files()) if os.path.isdir(vault.VDIR) else 0,
+                            **({"synced": SYNC[0].m.get("last_ok"), "fromdev": SYNC[0].view().get("card")} if SYNC[0] is not None else {})})
         # ---- books ----
+        if p == "/api/ideas":  # the idea board: cards, threads and where you were looking
+            return J(self, D.get("ideas") or {"cards": [], "links": [], "view": None})
+        if p == "/api/ideas/save":
+            D["ideas"] = {"cards": d.get("cards", []), "links": d.get("links", []), "view": d.get("view")}
+            P.save()
+            return J(self, {"ok": True})
+        if p == "/api/ideas/file":  # a PDF or picture dropped on the board, kept encrypted on the stick
+            import base64
+            raw = base64.b64decode((d.get("data") or "").split(",", 1)[-1])
+            if len(raw) > 60e6:
+                return J(self, {"error": "That file is over 60 MB."}, 400)
+            fid = "f" + store.new_id()[:12]
+            os.makedirs(os.path.join(P.data_dir, "ideas"), exist_ok=True)
+            from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+            nonce = os.urandom(12)
+            open(os.path.join(P.data_dir, "ideas", fid + ".enc"), "wb").write(nonce + AESGCM(P.key).encrypt(nonce, raw, b"feather-idea"))
+            D.setdefault("ideafiles", {})[fid] = {"name": d.get("name", "file"), "type": d.get("type", "application/octet-stream"), "size": len(raw), "t": store.now()}
+            P.save()
+            return J(self, {"fid": fid})
+        if p == "/api/ideas/file/delete":
+            fid = re.sub(r"[^0-9a-z]", "", d.get("fid", ""))
+            D.setdefault("ideafiles", {}).pop(fid, None)
+            try:
+                os.remove(os.path.join(P.data_dir, "ideas", fid + ".enc"))
+            except OSError:
+                pass
+            P.save()
+            return J(self, {"ok": True})
+        if p == "/api/jots":  # quick notes, newest first
+            return J(self, sorted(D.setdefault("jots", {}).values(), key=lambda j: -j.get("t", 0)))
+        if p == "/api/jot/save":
+            js = D.setdefault("jots", {})
+            jid = d.get("id") or store.new_id()
+            text = (d.get("text") or "").strip()
+            if not text:
+                js.pop(jid, None)
+                P.save()
+                return J(self, {"ok": True, "removed": jid})
+            j = js.setdefault(jid, {"id": jid, "t": store.now()})
+            j["text"], j["link"], j["edited"] = text, (d.get("link") or "").strip(), store.now()
+            P.save()
+            return J(self, j)
+        if p == "/api/jot/delete":
+            D.setdefault("jots", {}).pop(d.get("id"), None)
+            P.save()
+            return J(self, {"ok": True})
         if p == "/api/books":
             return J(self, sorted(D["books"].values(), key=lambda b: -b.get("t", 0)))
         if p == "/api/book/save":
@@ -921,7 +1182,7 @@ class H(BaseHTTPRequestHandler):
             return J(self, b)
         if p == "/api/book/chapter":
             ch = d.get("chapter") or "Notes"
-            b["chapters"][ch] = {"notes": d.get("notes", ""), "tags": d.get("tags", []), "t": store.now()}
+            b["chapters"][ch] = {**(b["chapters"].get(ch) or {}), "notes": d.get("notes", ""), "tags": d.get("tags", []), "t": store.now()}  # keeps the chapter's people
             b["t"] = store.now()
             P.save()
             return J(self, b)
@@ -945,6 +1206,11 @@ class H(BaseHTTPRequestHandler):
             b["review"] = {"answers": d.get("answers", []), "text": text, "t": store.now()}
             P.save()
             return J(self, b["review"])
+        if p == "/api/book/review/draft":  # from the reader's book-report panel: keep answers and text, don't mark finished
+            r = b.setdefault("review", {})
+            r["answers"], r["text"], r["t"] = d.get("answers", r.get("answers", [])), d.get("text", r.get("text", "")), store.now()
+            P.save()
+            return J(self, r)
         if p == "/api/book/review/save":
             b.setdefault("review", {})["text"] = d.get("text", "")
             b["finished"] = b.get("finished") or store.now()
@@ -969,6 +1235,38 @@ class H(BaseHTTPRequestHandler):
             eid = store.new_id()
             EXAMS[eid] = {"qs": qs, "title": d.get("title") or (notes[0][0] if len(notes) == 1 else (d.get("folder") or "Mixed notes")), "minutes": d.get("minutes")}
             return J(self, {"id": eid, "title": EXAMS[eid]["title"], "questions": [{k: q[k] for k in ("kind", "q", "options", "source")} for q in qs]})
+        if p == "/api/exam/archie":  # mock exams from Archie (kept in xexams) and Archie's own, for the Mock exam page
+            q = D.get("cardq") or {}
+            X = D.get("xexams") or {}
+            mine = [{"id": k, "title": x.get("title") or k, "n": len(x.get("questions") or []), "minutes": x.get("minutes"),
+                     "best": max((a.get("score", 0) for a in x.get("attempts") or []), default=None), "tries": len(x.get("attempts") or [])} for k, x in X.items()]
+            return J(self, {"mine": sorted(mine, key=lambda x: x["title"].lower()), "archie": D.get("archieexams") or {},
+                            "pending": {r.get("eid"): r.get("op") for r in q.values() if r.get("kind") == "exam"}})
+        if p == "/api/exam/fromarchie":  # take one of Archie's exams here (graded the same way as Feather's own)
+            x = (D.get("xexams") or {}).get(d.get("id", ""))
+            if not x:
+                return J(self, {"error": "That exam isn't in Feather. Request it from Archie first."}, 404)
+            qs = []
+            for q in x.get("questions") or []:
+                t, pts = q.get("type"), float(q.get("points") or 1)
+                ex = " ".join(str(v) for v in [q.get("explain") or "", " · ".join(q.get("rubric") or [])] if v)
+                if t == "mc":
+                    opts = [str(o) for o in q.get("options") or []]
+                    try:
+                        ans = opts[int(q.get("answer"))]
+                    except (TypeError, ValueError, IndexError):
+                        continue
+                    qs.append({"kind": "mc", "q": q.get("q", ""), "options": opts, "answer": ans, "source": x.get("title", ""), "excerpt": ex, "points": pts})
+                elif t == "tf":
+                    qs.append({"kind": "mc", "q": q.get("q", ""), "options": ["True", "False"], "answer": "True" if q.get("answer") else "False",
+                               "source": x.get("title", ""), "excerpt": ex, "points": pts})
+                else:
+                    qs.append({"kind": "explain" if t == "long" else "short", "q": q.get("q", ""), "options": [], "answer": str(q.get("answer") or ""),
+                               "source": x.get("title", ""), "excerpt": (str(q.get("answer") or "") + " " + ex).strip(), "points": pts})
+            eid = store.new_id()
+            EXAMS[eid] = {"qs": qs, "title": x.get("title") or "Mock exam", "minutes": x.get("minutes"), "xid": d["id"], "start": time.time()}
+            return J(self, {"id": eid, "title": EXAMS[eid]["title"], "minutes": x.get("minutes") or 0,
+                            "questions": [{k: q[k] for k in ("kind", "q", "options", "source")} for q in qs]})
         if p == "/api/exam/grade":
             ex = EXAMS.get(d["id"])
             if not ex:
@@ -986,6 +1284,12 @@ class H(BaseHTTPRequestHandler):
             rec = {"id": d["id"], "title": ex["title"], "score": score, "weak": sorted(weak, key=lambda k: -weak[k])[:3], "t": store.now(), "n": len(ex["qs"])}
             if d.get("save", True):
                 D["exams"].append(rec)
+            x = (D.get("xexams") or {}).get(ex.get("xid") or "")
+            if x is not None:  # one of Archie's exams: the attempt is kept with it, in Archie's format
+                of = sum(q.get("points", 1) for q in ex["qs"])
+                got = sum(r["score"] * q.get("points", 1) for r, q in zip(res, ex["qs"]))
+                x.setdefault("attempts", []).append({"date": time.strftime("%Y-%m-%dT%H:%M"), "score": round(100 * got / max(1, of)), "points": round(got, 1),
+                                                     "of": of, "minutes": round((time.time() - ex.get("start", time.time())) / 60, 1), "device": "laptop"})
             P.save()
             return J(self, {"score": score, "results": res, "weak": rec["weak"]})
         if p == "/api/teach":
@@ -1043,6 +1347,12 @@ class H(BaseHTTPRequestHandler):
             P.save()
             return J(self, {"made": len(made), "deck": deck, "model": ai.status() == "ready"})
         # ---- saved quotes (from the lock screen), plain text ----
+        if p == "/api/prefs":  # the reader's settings (theme, size, voice, speed...), kept here so they survive restarts and sync
+            st = D.setdefault("settings", {})
+            if isinstance(d.get("set"), dict):
+                st["reader"] = {str(k)[:40]: v for k, v in list(d["set"].items())[:60] if isinstance(v, (str, int, float, bool)) or v is None}
+                P.save()
+            return J(self, st.get("reader") or {})
         if p == "/api/quotes":
             return J(self, {"text": D.setdefault("settings", {}).get("quotes", "")})
         if p == "/api/quotes/add":
@@ -1168,6 +1478,101 @@ class H(BaseHTTPRequestHandler):
                     n += 1
             P.save()
             return J(self, {"renamed": n})
+        if p == "/api/shelf/notes":  # book notes and quick notes, for the Shelf (send to Archie)
+            books = []
+            for rid in (D.get("readings") or {}):
+                name, md, n = shelf_book_md(rid)
+                if n:
+                    books.append({"id": rid, "title": name, "n": n})
+            jots = sorted((D.get("jots") or {}).values(), key=lambda j: -(j.get("t") or 0))[:8]
+            q = D.get("noteq") or {}
+            return J(self, {"books": books, "jots": [{"id": j.get("id"), "first": (j.get("text") or "").split("\n")[0][:120], "t": j.get("t")} for j in jots],
+                            "pending": [x.get("name") for x in q.values()]})
+        if p == "/api/sonia/state":  # Sonia audio for one book: what's on this laptop, what the PC made, the settings
+            rid = str(d.get("rid") or "")
+            so = D.get("sonia") or {}
+            folder = os.path.join(P.data_dir, "sonia", rid) if re.fullmatch(r"[0-9a-f]{12}", rid) else ""
+            here = sorted(int(f[:-6]) for f in (os.listdir(folder) if folder and os.path.isdir(folder) else []) if re.fullmatch(r"\d+\.t\.enc", f)
+                          and os.path.exists(os.path.join(folder, f[:-6] + ".a.enc")))
+            st = so.get("set") or {}
+            return J(self, {"here": here, "made": (so.get("made") or {}).get(rid, []), "left": so.get("left", 0), "err": so.get("err", ""),
+                            "set": {"speed": float(st.get("speed") or 1.0), "vol": float(1.0 if st.get("vol") is None else st["vol"]), "ahead": st.get("ahead") is not False, "voice": st.get("voice") or "en-GB-SoniaNeural",
+                                    "night": st.get("night") is not False}, "accents": so.get("accents") or [], "night_left": so.get("night_left", 0),
+                            "accent_now": bool(so.get("accent_now"))})
+        if p == "/api/sonia/times":
+            rid, ch = str(d.get("rid") or ""), str(int(d.get("ch") or 0))
+            f = os.path.join(P.data_dir, "sonia", rid, ch + ".t.enc")
+            if not re.fullmatch(r"[0-9a-f]{12}", rid) or not os.path.isfile(f):
+                return J(self, {"error": "not here"}, 404)
+            from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+            raw = open(f, "rb").read()
+            if SYNC[0] is not None:
+                try:
+                    SYNC[0].m.setdefault("sonia", {}).setdefault(f"{rid}/{ch}", {})["played"] = time.time()
+                except Exception:
+                    pass
+            return J(self, json.loads(AESGCM(P.key).decrypt(raw[:12], raw[12:], b"feather-audiot")))
+        if p == "/api/sonia/ask":  # make chapters with Sonia (your PC does it), for this laptop / the phone
+            rid = str(d.get("rid") or "")
+            if rid not in (D.get("readings") or {}):
+                return J(self, {"error": "That book isn't in Reading."}, 404)
+            fr, to = int(d.get("from") or 0), int(d.get("to") if d.get("to") is not None else 9999)
+            dev = [x for x in (d.get("for") or ["laptops"]) if x in ("phone", "laptops")] or ["laptops"]
+            so = D.setdefault("sonia", {})
+            so.setdefault("reqs", {})[store.new_id()] = {"rid": rid, "from": fr, "to": to, "for": dev, "t": store.now(), **({"ahead": True} if d.get("ahead") else {})}
+            P.save()
+            if SYNC[0] is not None:
+                SYNC[0].kick(1)
+            return J(self, {"ok": True})
+        if p == "/api/sonia/set":  # speed, volume, keep-ahead: saved in Feather, so every device plays the same way
+            so = D.setdefault("sonia", {})
+            st = dict(so.get("set") or {})
+            for k in ("speed", "vol"):
+                if isinstance(d.get(k), (int, float)):
+                    st[k] = max(0.0, min(3.0, float(d[k])))
+            if isinstance(d.get("ahead"), bool):
+                st["ahead"] = d["ahead"]
+            if isinstance(d.get("night"), bool):
+                st["night"] = d["night"]
+            if re.fullmatch(r"en-(GB|IE|AU|US)-[A-Za-z]+Neural|accent:[a-z_]{2,30}", str(d.get("voice") or "")):
+                st["voice"] = d["voice"]
+            so["set"] = st
+            P.save()
+            return J(self, {"ok": True})
+        if p == "/api/shelf/send":  # a book's notes or a quick note, to Archie as a note (an inbox card there), at the next sync
+            if d.get("kind") == "book":
+                title, md, n = shelf_book_md(str(d.get("id") or ""))
+                name, text = re.sub(r'[\\/:*?"<>|]', "", title)[:80] + " - my notes.md", md
+            else:
+                j = (D.get("jots") or {}).get(str(d.get("id") or ""))
+                if not j:
+                    return J(self, {"error": "That note is gone."}, 404)
+                text = (j.get("text") or "") + ("\n\n" + j["link"] if j.get("link") else "")
+                name = (re.sub(r'[\\/:*?"<>|]', "", (j.get("text") or "note").split("\n")[0])[:60] or "note") + ".md"
+            D.setdefault("noteq", {})[store.new_id()] = {"name": name, "text": text, "t": store.now()}
+            P.save()
+            if SYNC[0] is not None:
+                SYNC[0].kick(1)
+            return J(self, {"ok": True, "name": name})
+        if p == "/api/cards/link":  # Archie's sets, and what's waiting to move between Archie and Feather
+            q = D.get("cardq") or {}
+            return J(self, {"archie": D.get("archiedecks") or {}, "pending": {r.get("deck"): r.get("op") for r in q.values()}, "hist": D.get("shelfhist") or []})
+        if p == "/api/cards/xfer":  # send a set to Archie (f2a), or get / request Archie's (a2f): your PC does it at the next sync
+            op, deck = d.get("op"), (d.get("deck") or "").strip()[:80]
+            if op not in ("f2a", "a2f", "restore") or not deck or op == "restore" and not d.get("hid"):
+                return J(self, {"error": "Which set?"}, 400)
+            r = {"op": op, "deck": deck, "t": store.now()}
+            if d.get("kind") == "exam" and d.get("eid"):
+                r.update(kind="exam", eid=str(d["eid"])[:60])
+            if d.get("clean"):
+                r["clean"] = True
+            if op == "restore":
+                r["hid"] = str(d["hid"])[:20]
+            D.setdefault("cardq", {})[store.new_id()] = r
+            P.save()
+            if SYNC[0] is not None:
+                SYNC[0].kick(1)
+            return J(self, {"ok": True})
         if p == "/api/cards/decks":
             ds = {}
             for c in D["cards"].values():
@@ -1247,6 +1652,8 @@ class H(BaseHTTPRequestHandler):
             items.sort(key=lambda x: (x["date"], x.get("time") or "99"))
             P.save()
             return J(self, {"items": items, "pending": len(q), "id": new["id"]})
+        if p.startswith("/api/sync/"):
+            return self.sync_api(p[len("/api/sync/"):], d)
         if p == "/api/settings/set":  # your name for the greeting, the first-run tour being done
             S_ = D.setdefault("settings", {})
             if "name" in d:
@@ -1265,6 +1672,8 @@ class H(BaseHTTPRequestHandler):
                 return J(self, {"error": "Use at least 6 characters."}, 400)
             P.change_password(d["new"])
             return J(self, {"ok": True, "note": "Changed. Plug into your PC once so it can re-pair."})
+        if app_version() != VERSION:  # the files were updated under this copy: say so, instead of "Unknown request"
+            return J(self, {"error": "Feather was just updated. Close it (Alt+M) and open it again (Ctrl+Alt+F)."}, 409)
         return J(self, {"error": "Unknown request."}, 404)
 
 
@@ -1301,17 +1710,10 @@ def open_window(url):
 
 EJECT_PS = r"""
 Wait-Process -Id __PID__ -Timeout 30 -ErrorAction SilentlyContinue
-Get-Process llama-server -ErrorAction SilentlyContinue | Stop-Process -Force
+# stop anything still running from the stick (the model server, a leftover python), so Windows can let go of it
+Get-Process llama-server -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Get-Process -ErrorAction SilentlyContinue | ? { $_.Path -and $_.Path.StartsWith('__DRIVE__\', [StringComparison]::OrdinalIgnoreCase) } | Stop-Process -Force -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 2
-Add-Type -AssemblyName System.Windows.Forms, System.Drawing
-function Say($title, $text, $kind) {
-    $n = New-Object System.Windows.Forms.NotifyIcon
-    $n.Icon = [System.Drawing.SystemIcons]::Information
-    $n.Visible = $true
-    $n.ShowBalloonTip(8000, $title, $text, $kind)
-    Start-Sleep -Seconds 8
-    $n.Dispose()
-}
 $gone = $false
 for ($try = 0; $try -lt 3 -and -not $gone; $try++) {
     (New-Object -ComObject Shell.Application).Namespace(17).ParseName('__DRIVE__').InvokeVerb('Eject')
@@ -1320,28 +1722,79 @@ for ($try = 0; $try -lt 3 -and -not $gone; $try++) {
         if (-not (Test-Path '__DRIVE__\')) { $gone = $true; break }
     }
 }
-if ($gone) { Say 'Feather' 'Safe to unplug. Toss it in your bag.' 'Info' }
-else { Say 'Feather' 'Could not eject. Close any File Explorer window open on the stick, then use the eject button in the taskbar.' 'Warning' }
+# Feather's green goodbye screen (same idea as the app): shown from the laptop's temp folder once the stick is gone
+$page = Join-Path $env:TEMP 'feather-eject\safe.html'
+$edge = @("${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe", "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe") | ? { Test-Path $_ } | select -First 1
+if ($edge -and (Test-Path $page)) {
+    $url = 'file:///' + ($page -replace '\\', '/') + $(if ($gone) { '' } else { '#fail' })
+    Start-Process $edge -ArgumentList "--app=$url", "--user-data-dir=$(Join-Path $env:TEMP 'feather-eject\profile')", '--start-maximized', '--no-first-run', '--no-default-browser-check'
+}
 """
 
 
+SAFE_HTML = """<!doctype html><html><head><meta charset="utf-8"><title>Feather</title><style>
+@font-face{font-family:Newsreader;src:url(data:font/woff2;base64,__NEWS__) format('woff2');font-weight:500}
+@font-face{font-family:'JB Mono';src:url(data:font/ttf;base64,__MONO__) format('truetype');font-weight:700}
+html,body{margin:0;height:100%;cursor:default}
+body{background:#c6f432;color:#0c0d0b;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;font-family:'JB Mono',Consolas,monospace}
+body.fail{background:#ff8a6b}
+.q{font-size:64px;line-height:1;margin-bottom:6px}
+.b{font:500 clamp(46px,7vw,92px)/.95 Newsreader,Georgia,serif;text-align:center}
+.k{font-size:13px;font-weight:700;letter-spacing:.16em;text-align:center;text-transform:uppercase}
+</style></head><body><div class="q">&#9998;</div><div class="b" id="b">Safe to unplug</div>
+<div class="k" id="k">Feather locked &middot; nothing left on this PC &middot; toss it in your bag</div>
+<script>if(location.hash==='#fail'){document.body.className='fail';document.getElementById('b').textContent='Still in use';
+document.getElementById('k').textContent='Close any File Explorer window on the stick, then eject from the taskbar'}
+document.onclick=()=>window.close();setTimeout(()=>window.close(),location.hash==='#fail'?9000:3500)</script></body></html>"""
+
+
+def write_safe_page():
+    """Write Feather's green goodbye screen (fonts embedded) to the laptop's temp folder, so it can show after the stick is gone."""
+    d = os.path.join(tempfile.gettempdir(), "feather-eject")
+    os.makedirs(d, exist_ok=True)
+    fonts = os.path.join(APP, "web", "fonts")
+    b64 = lambda n: base64.b64encode(open(os.path.join(fonts, n), "rb").read()).decode()
+    try:
+        page = SAFE_HTML.replace("__NEWS__", b64("Newsreader-500-normal.woff2")).replace("__MONO__", b64("JetBrainsMono-Bold.ttf"))
+    except OSError:
+        page = SAFE_HTML.replace("__NEWS__", "").replace("__MONO__", "")  # missing fonts: still show the screen, system fonts
+    open(os.path.join(d, "safe.html"), "w", encoding="utf-8").write(page)
+
+
+_ejecting = threading.Lock()
+
+
 def eject():
-    """Save, lock, stop everything running off the stick, then have Windows eject it once this app has exited."""
+    """Save, lock, stop everything running off the stick, then have Windows eject it once this app has exited.
+    Runs once: a second call (e.g. the eject button and Alt+M together) is ignored, so two saves can't race."""
+    if not _ejecting.acquire(blocking=False):
+        return
     time.sleep(0.5)  # let the page get its answer first
-    if P.data is not None:
-        P.save()
-        P.lock()
-        BOOKS.clear()
-        IDX.clear()
+    if INSTALLED and sys.platform == "win32":  # nothing to eject here: the window goes at once (hidden or not), then lock and close
+        try:
+            u = _user32()
+            for h in find_window(u):
+                u.PostMessageW(h, 0x0010, 0, 0)  # WM_CLOSE
+        except Exception as e:
+            log("close window:", repr(e))
+    lock_all(final_sync=not INSTALLED)  # a panic lock doesn't wait for the PC; what's left syncs at the next unlock
     ai.stop()
+    if INSTALLED:  # closed and locked; Feather itself keeps waiting in the background for Ctrl+Alt+F
+        WIN["hidden"], WIN["hid"] = False, []
+        _ejecting.release()
+        return
     try:
         os.remove(INUSE)
     except OSError:
         pass
     drive = os.path.splitdrive(ROOT)[0]
-    if sys.platform == "win32" and drive:
+    if sys.platform == "win32" and drive and not INSTALLED:  # installed on this laptop: nothing to eject, just close
         # the helper runs from the laptop's temp folder (not the stick), waits for this app to close, ejects,
-        # waits until the stick is really gone, then shows a Windows notification either way
+        # waits until the stick is really gone, then shows Feather's green goodbye screen either way
+        try:
+            write_safe_page()
+        except Exception as e:
+            log("eject screen:", repr(e))
         ps = EJECT_PS.replace("__PID__", str(os.getpid())).replace("__DRIVE__", drive)
         path = os.path.join(tempfile.gettempdir(), "feather-eject.ps1")
         open(path, "w", encoding="utf-8-sig").write(ps)
@@ -1351,28 +1804,51 @@ def eject():
 
 
 def watchdog(server):
+    n = 0
     while True:
         time.sleep(5)
+        n += 1
+        try:  # a newer Feather took over (after an update): this one steps aside, so no window talks to old code
+            owner = int(open(INUSE).read().split()[0])
+        except (OSError, ValueError, IndexError):
+            owner = os.getpid()
+        if owner != os.getpid():
+            log("a newer Feather took over (pid", owner, "): this copy closes")
+            try:
+                ai.stop()
+            except Exception:
+                pass
+            os._exit(0)
         try:
             os.utime(INUSE)  # tells the PC sync Feather is open right now
         except OSError:
             pass
+        if INSTALLED and n % 12 == 0 and P.data is None and not open_windows() and app_version() != VERSION:
+            log("files changed under this copy: restarting with them")  # updated by another copy: start fresh, quietly
+            restart_for_update()
         if P.data is not None and time.time() - last_action[0] > IDLE_LOCK:
-            P.save()
-            P.lock()
-            BOOKS.clear()
-            IDX.clear()
+            lock_all()
+        if INSTALLED:  # on a laptop Feather stays in the background, locked, so Ctrl+Alt+F opens it at once
+            gone = (bye_at[0] and time.time() - bye_at[0] > 8) or (not WIN["hidden"] and time.time() - last_ping[0] > 900)
+            if gone and P.data is not None:
+                log("window closed: locked, waiting in the background")
+                lock_all()
+                ai.stop()
+            if gone:
+                bye_at[0] = 0
+                last_ping[0] = time.time()
+            if P.data is None and update_waiting() and not open_windows():
+                restart_for_update()
+            continue
         if bye_at[0] and time.time() - bye_at[0] > 8:  # the window was closed
             log("window closed, shutting down")
             break
+        if WIN["hidden"]:
+            last_ping[0] = time.time()  # hidden on purpose: it isn't gone (the idle lock above still applies)
         if time.time() - last_ping[0] > 900:  # no sign of the window for 15 min (Windows slows hidden windows, so be patient)
             log("no window for 15 min, shutting down")
             break
-    if P.data is not None:
-        P.save()
-        P.lock()
-        BOOKS.clear()
-        IDX.clear()
+    lock_all()
     ai.stop()
     try:
         os.remove(INUSE)
@@ -1381,9 +1857,41 @@ def watchdog(server):
     server.shutdown()
 
 
+def update_waiting():
+    try:
+        return any(fs for _, _, fs in os.walk(os.path.join(ROOT, "app.next")))
+    except OSError:
+        return False
+
+
+def open_windows():
+    if sys.platform != "win32":
+        return False
+    try:
+        return bool(find_window(_user32()))
+    except Exception:
+        return True
+
+
+def restart_for_update():
+    """An update from your PC is waiting and Feather is locked with no window: start again quietly with the new files."""
+    log("update waiting: restarting in the background")
+    try:
+        os.remove(INUSE)
+    except OSError:
+        pass
+    try:
+        subprocess.Popen([sys.executable, os.path.join("app", "feather.py"), "--background"], cwd=ROOT,
+                         creationflags=0x08000000 if sys.platform == "win32" else 0)
+    except Exception as e:
+        log("restart:", repr(e))
+        return
+    os._exit(0)
+
+
 def refresh_autostart():
     """If this laptop has autostart on, keep its watcher current: newest version, Feather names (an Archie Pocket one is replaced)."""
-    if sys.platform != "win32" or DEMO:
+    if sys.platform != "win32" or DEMO or INSTALLED:
         return
     import shutil
     local = os.environ.get("LOCALAPPDATA", "")
@@ -1427,6 +1935,36 @@ def app_version():
 VERSION = app_version()
 
 
+def shelf_book_md(rid):
+    """One note with everything you wrote in a book: notes and highlights, quotes, chapter notes, people."""
+    D = P.data or {}
+    r = (D.get("readings") or {}).get(rid) or {}
+    bk = next((b for b in (D.get("books") or {}).values() if b.get("digital") == rid), {})
+    title = bk.get("title") or r.get("name") or "Book"
+    L, n = [f"# {title} · my notes", ""], 0
+    if bk.get("author") or r.get("author"):
+        L.append("by " + (bk.get("author") or r.get("author")))
+    pins = [x for x in (D.get("pins") or {}).get(rid, []) if x.get("k") != "bm" and (x.get("text") or x.get("note"))]
+    if pins:
+        L += ["", "## Notes and highlights"] + [f"- ch. {x.get('ch', 0) + 1}: {str(x.get('text') or x.get('note')).replace(chr(10), ' ')}"
+                                                for x in sorted(pins, key=lambda x: (x.get("ch", 0), x.get("p", 0)))]
+        n += len(pins)
+    qs = [x for x in bk.get("quotes") or [] if isinstance(x, dict) and x.get("text")]
+    if qs:
+        L += ["", "## Quotes"] + [f"> {x['text']}" + (f" (p. {x['page']})" if x.get("page") else "") + "\n" for x in qs]
+        n += len(qs)
+    for t, c in (bk.get("chapters") or {}).items():
+        if not isinstance(c, dict):
+            continue
+        bits = [c["notes"].strip()] if isinstance(c.get("notes"), str) and c["notes"].strip() else []
+        ppl = [p if isinstance(p, str) else (p or {}).get("name") for p in c.get("people") or []]
+        if any(ppl):
+            bits.append("People: " + ", ".join(x for x in ppl if x))
+        if bits:
+            L += ["", "## " + t] + bits
+    return title, "\n".join(L), n
+
+
 def stop_other_copies():
     """Any other Feather running from this stick (an old version left open) is closed, and its model with it."""
     if sys.platform != "win32":
@@ -1441,9 +1979,154 @@ def stop_other_copies():
         log("stop old copies:", repr(e))
 
 
+# ---------- Ctrl+Alt+F: hide Feather, or bring it back, from anywhere ----------
+WIN = {"hidden": False, "port": None, "hid": []}
+KEYS = {}  # how the two keys are doing on this computer (sent to your PC's sync log, so problems can be seen from there)
+
+
+def key_report():
+    out = dict(KEYS, v=FEATHER_VERSION, build=VERSION, installed=INSTALLED)
+    try:
+        out["helper"] = json.load(open(os.path.join(P.data_dir, "fkey.json"), encoding="utf-8"))
+    except (OSError, ValueError):
+        out["helper"] = None
+    return out
+
+
+def _user32():
+    import ctypes
+    from ctypes import wintypes as W
+    u = ctypes.WinDLL("user32")
+    u.GetForegroundWindow.restype = W.HWND
+    for name, args in (("IsWindowVisible", [W.HWND]), ("IsIconic", [W.HWND]), ("SetForegroundWindow", [W.HWND]), ("ShowWindow", [W.HWND, ctypes.c_int]), ("PostMessageW", [W.HWND, ctypes.c_uint, W.WPARAM, W.LPARAM]),
+                       ("GetWindowTextW", [W.HWND, W.LPWSTR, ctypes.c_int]), ("GetClassNameW", [W.HWND, W.LPWSTR, ctypes.c_int])):
+        getattr(u, name).argtypes = args
+    return u
+
+
+def find_window(u):
+    """Feather's own window (Edge in app mode, titled "Feather"), even while hidden."""
+    import ctypes
+    from ctypes import wintypes as W
+    found = []
+
+    @ctypes.WINFUNCTYPE(W.BOOL, W.HWND, W.LPARAM)
+    def each(h, _):
+        t = ctypes.create_unicode_buffer(64)
+        c = ctypes.create_unicode_buffer(64)
+        u.GetWindowTextW(h, t, 64)
+        u.GetClassNameW(h, c, 64)
+        if t.value == "Feather" and c.value.startswith("Chrome_WidgetWin"):
+            found.append(h)
+        return True
+    u.EnumWindows(each, 0)
+    return found
+
+
+def toggle_window(show_only=False):
+    """In front -> hide it (it stays unlocked until the usual idle lock). Hidden, minimized or behind something -> bring it back.
+    No window at all -> open one. Alt+M is still the key that locks and closes."""
+    if sys.platform != "win32":
+        return "none"
+    u = _user32()
+    wins = find_window(u)
+    hid = [h for h in wins if h in WIN["hid"]]                         # the ones this key hid
+    seen = [h for h in wins if u.IsWindowVisible(h) and h not in hid]  # on the screen or minimized
+    if not hid and not seen:
+        WIN["hidden"], WIN["hid"] = False, []
+        if WIN["port"]:
+            open_window(f"http://127.0.0.1:{WIN['port']}/")
+        return "opened"
+    front = u.GetForegroundWindow()
+    if not show_only and any(h == front and not u.IsIconic(h) for h in seen):
+        for h in seen:
+            u.ShowWindow(h, 0)  # SW_HIDE: off the screen and off the taskbar
+        WIN["hidden"], WIN["hid"] = True, hid + seen
+        log("hidden (Ctrl+Alt+F)")
+        return "hidden"
+    for h in hid:
+        u.ShowWindow(h, 5)      # SW_SHOW
+    for h in hid + seen:
+        if u.IsIconic(h):
+            u.ShowWindow(h, 9)  # SW_RESTORE
+        u.SetForegroundWindow(h)
+    WIN["hidden"], WIN["hid"] = False, []
+    last_ping[0] = time.time()
+    return "shown"
+
+
+KEY_HELPER = os.path.join(APP, "fkey.py")
+
+
+def window_key():
+    """Installed on a laptop: a tiny helper that starts with Windows holds Ctrl+Alt+F, so the key also opens Feather
+    when it isn't running. From the stick: the key works while Feather is open."""
+    if sys.platform != "win32" or DEMO:
+        return
+    if INSTALLED and os.path.exists(KEY_HELPER):
+        try:
+            import winreg
+            pyw = os.path.join(ROOT, "python", "pythonw.exe")
+            cmd = f'"{pyw}" "{KEY_HELPER}"'
+            with winreg.CreateKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run") as k:
+                try:
+                    cur = winreg.QueryValueEx(k, "FeatherKey")[0]
+                except OSError:
+                    cur = None
+                if cur != cmd:
+                    winreg.SetValueEx(k, "FeatherKey", 0, winreg.REG_SZ, cmd)
+            subprocess.Popen([pyw, KEY_HELPER], cwd=ROOT, creationflags=0x08000000)  # exits by itself if one is already running
+            KEYS["f"] = "helper started"
+            return
+        except Exception as e:
+            KEYS["f"] = "helper failed: " + repr(e)[:80]
+            log("hotkey helper:", repr(e))
+    import ctypes
+    from ctypes import wintypes
+    u = ctypes.windll.user32
+    if not u.RegisterHotKey(None, 2, 0x0001 | 0x0002 | 0x4000, ord("F")):  # ALT | CONTROL | NOREPEAT
+        KEYS["f"] = "taken by another program"
+        log("Ctrl+Alt+F is taken by another program")
+        return
+    KEYS["f"] = "registered here"
+    msg = wintypes.MSG()
+    while u.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+        if msg.message == 0x0312:
+            toggle_window()
+
+
+def panic_key():
+    """Alt+M anywhere on this PC: save, lock, stop everything, eject the stick and show Feather's green goodbye screen. No questions.
+    The same panic key as DUMONT, so one habit ejects whichever app you're in."""
+    if sys.platform != "win32" or DEMO:
+        return
+    import ctypes
+    from ctypes import wintypes
+    u = ctypes.windll.user32
+    # An older Feather being replaced (after an update) still holds the key for a moment, so keep trying:
+    # every 2 s for the first two minutes, then every 30 s. (DUMONT may also hold it while it's open.)
+    tries = 0
+    while not u.RegisterHotKey(None, 1, 0x0001 | 0x4000, ord("M")):  # ALT | NOREPEAT
+        if tries == 0:
+            log("Alt+M is taken (an older Feather closing, or DUMONT); trying again")
+        KEYS["m"] = "taken by another program"
+        tries += 1
+        time.sleep(2 if tries < 60 else 30)
+    if tries:
+        log("Alt+M is Feather's again")
+    KEYS["m"] = "registered"
+    msg = wintypes.MSG()
+    while u.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+        if msg.message == 0x0312:  # WM_HOTKEY
+            KEYS["m"] = "pressed"
+            log("panic eject (Alt+M)")
+            eject()  # saves, locks, stops the model, shows the green screen, ejects, exits
+
+
 def main():
     log("start", sys.version.split()[0], "model:", ai.status())
     threading.Thread(target=refresh_autostart, daemon=True).start()
+    threading.Thread(target=panic_key, daemon=True).start()
     try:  # already open and up to date? -> just show that window again. An older copy still running gets replaced.
         if time.time() - os.path.getmtime(INUSE) < 15:
             port = int(open(INUSE).read().split()[1])
@@ -1452,8 +2135,16 @@ def main():
                 v = json.loads(urllib.request.urlopen(f"http://127.0.0.1:{port}/api/version", timeout=3).read()).get("v")
             except Exception:
                 v = None
+            if v == VERSION and "--background" in sys.argv:
+                return  # already waiting in the background
             if v == VERSION:
-                open_window(f"http://127.0.0.1:{port}/")
+                try:  # it may only be hidden (Ctrl+Alt+F): bring that window back, or open one
+                    if sys.platform == "win32":
+                        import ctypes
+                        ctypes.windll.user32.AllowSetForegroundWindow(int(open(INUSE).read().split()[0]))
+                    urllib.request.urlopen(f"http://127.0.0.1:{port}/api/show", timeout=5).read()
+                except Exception:
+                    open_window(f"http://127.0.0.1:{port}/")
                 return
             log("an older Feather was still running (", v, "), replacing it with", VERSION)
     except (OSError, IndexError, ValueError):
@@ -1461,9 +2152,11 @@ def main():
     stop_other_copies()
     srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
     port = srv.server_address[1]
+    WIN["port"] = port
     open(INUSE, "w").write(f"{os.getpid()} {port}")
+    threading.Thread(target=window_key, daemon=True).start()
     threading.Thread(target=watchdog, args=(srv,), daemon=True).start()
-    if "--no-window" not in sys.argv:
+    if "--no-window" not in sys.argv and "--background" not in sys.argv:
         open_window(f"http://127.0.0.1:{port}/")
     print(f"Feather on http://127.0.0.1:{port}/", flush=True)
     srv.serve_forever()
